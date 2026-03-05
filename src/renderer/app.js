@@ -17,6 +17,7 @@ const state = {
   currentView: 'dashboard',
   invoiceSearch: '',
   purchaseSearch: '',
+  billingProductSearch: '',
   expenseSearch: '',
   selectedLedgerSupplierId: ''
 };
@@ -351,6 +352,25 @@ function cacheDom() {
   dom.purchaseSearch = document.getElementById('purchase-search');
   dom.purchasesBody = document.getElementById('purchases-body');
 
+  dom.purchaseSupplierForm = document.getElementById('purchase-supplier-form');
+  dom.purchaseSupplierName = document.getElementById('purchase-supplier-name');
+  dom.purchaseSupplierPhone = document.getElementById('purchase-supplier-phone');
+  dom.purchaseSupplierGstin = document.getElementById('purchase-supplier-gstin');
+  dom.purchaseSupplierAddress = document.getElementById('purchase-supplier-address');
+  dom.purchaseSupplierSaveBtn = document.getElementById('purchase-supplier-save-btn');
+
+  dom.purchaseProductForm = document.getElementById('purchase-product-form');
+  dom.purchaseProductName = document.getElementById('purchase-product-name');
+  dom.purchaseProductBarcode = document.getElementById('purchase-product-barcode');
+  dom.purchaseProductCategory = document.getElementById('purchase-product-category');
+  dom.purchaseProductUnit = document.getElementById('purchase-product-unit');
+  dom.purchaseProductCostPrice = document.getElementById('purchase-product-cost-price');
+  dom.purchaseProductRetailPrice = document.getElementById('purchase-product-retail-price');
+  dom.purchaseProductWholesalePrice = document.getElementById('purchase-product-wholesale-price');
+  dom.purchaseProductWholesaleMinQty = document.getElementById('purchase-product-wholesale-min-qty');
+  dom.purchaseProductReorderLevel = document.getElementById('purchase-product-reorder-level');
+  dom.purchaseProductSaveBtn = document.getElementById('purchase-product-save-btn');
+
   dom.expenseForm = document.getElementById('expense-form');
   dom.expenseCategory = document.getElementById('expense-category');
   dom.expenseAmount = document.getElementById('expense-amount');
@@ -369,8 +389,16 @@ function cacheDom() {
   dom.invoiceDiscount = document.getElementById('invoice-discount');
   dom.invoicePaid = document.getElementById('invoice-paid');
   dom.invoiceNotes = document.getElementById('invoice-notes');
+  dom.billingCustomerForm = document.getElementById('billing-customer-form');
+  dom.billingCustomerName = document.getElementById('billing-customer-name');
+  dom.billingCustomerType = document.getElementById('billing-customer-type');
+  dom.billingCustomerPhone = document.getElementById('billing-customer-phone');
+  dom.billingCustomerGstin = document.getElementById('billing-customer-gstin');
+  dom.billingCustomerAddress = document.getElementById('billing-customer-address');
+  dom.billingCustomerSaveBtn = document.getElementById('billing-customer-save-btn');
 
   dom.barcodeInput = document.getElementById('barcode-input');
+  dom.billingProductSearch = document.getElementById('billing-product-search');
   dom.draftProductId = document.getElementById('draft-product-id');
   dom.draftQty = document.getElementById('draft-qty');
   dom.addItemBtn = document.getElementById('add-item-btn');
@@ -923,6 +951,70 @@ function bindPurchases() {
     state.purchaseSearch = dom.purchaseSearch.value.trim().toLowerCase();
     renderPurchases();
   });
+
+  dom.purchaseSupplierForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const payload = {
+      name: dom.purchaseSupplierName.value,
+      phone: dom.purchaseSupplierPhone.value,
+      gstin: dom.purchaseSupplierGstin.value,
+      address: dom.purchaseSupplierAddress.value
+    };
+
+    try {
+      setStatus('Saving supplier...');
+      const supplier = await invoke('upsertSupplier', payload);
+
+      state.selectedLedgerSupplierId = supplier.id;
+      await reloadData();
+      if (state.suppliers.some((entry) => entry.id === supplier.id)) {
+        dom.purchaseSupplier.value = supplier.id;
+      }
+
+      resetPurchaseSupplierForm();
+      showToast(`Supplier ${supplier.name} saved`);
+      setStatus('Ready');
+      dom.purchaseNotes.focus();
+    } catch (error) {
+      setStatus('Ready');
+      showToast(error.message, 'error');
+    }
+  });
+
+  dom.purchaseProductForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const payload = {
+      name: dom.purchaseProductName.value,
+      barcode: dom.purchaseProductBarcode.value,
+      category: dom.purchaseProductCategory.value,
+      unit: dom.purchaseProductUnit.value,
+      costPrice: dom.purchaseProductCostPrice.value,
+      retailPrice: dom.purchaseProductRetailPrice.value,
+      wholesalePrice: dom.purchaseProductWholesalePrice.value,
+      wholesaleMinQty: dom.purchaseProductWholesaleMinQty.value,
+      stock: 0,
+      reorderLevel: dom.purchaseProductReorderLevel.value
+    };
+
+    try {
+      setStatus('Saving new product...');
+      const product = await invoke('upsertProduct', payload);
+      await reloadData();
+
+      dom.purchaseDraftProductId.value = product.id;
+      dom.purchaseDraftCost.value = round2(toNumber(product.costPrice, product.wholesalePrice));
+      resetPurchaseProductForm();
+
+      showToast(`Product ${product.name} added with stock 0`);
+      setStatus('Ready');
+      dom.purchaseDraftQty.focus();
+    } catch (error) {
+      setStatus('Ready');
+      showToast(error.message, 'error');
+    }
+  });
 }
 
 function bindExpenses() {
@@ -967,6 +1059,7 @@ function bindBilling() {
     if (dom.invoiceChannel.value === 'retail') {
       state.invoicePaidTouched = false;
     }
+    syncBillingQuickCustomerType();
     renderBillingCustomerOptions();
     renderDraftItems();
   });
@@ -992,6 +1085,19 @@ function bindBilling() {
   });
 
   dom.addItemBtn.addEventListener('click', () => {
+    addSelectedProductToDraft();
+  });
+
+  dom.billingProductSearch.addEventListener('input', () => {
+    state.billingProductSearch = dom.billingProductSearch.value.trim().toLowerCase();
+    renderBillingProductOptions();
+  });
+
+  dom.billingProductSearch.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') {
+      return;
+    }
+    event.preventDefault();
     addSelectedProductToDraft();
   });
 
@@ -1081,6 +1187,38 @@ function bindBilling() {
 
     line.qty = nextQty;
     renderDraftItems();
+  });
+
+  dom.billingCustomerForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const payload = {
+      name: dom.billingCustomerName.value,
+      type: dom.billingCustomerType.value,
+      phone: dom.billingCustomerPhone.value,
+      address: dom.billingCustomerAddress.value,
+      gstin: dom.billingCustomerGstin.value
+    };
+
+    try {
+      setStatus('Saving customer...');
+      const customer = await invoke('upsertCustomer', payload);
+      await reloadData();
+
+      if (dom.invoiceChannel.value === 'wholesale' && customer.type !== 'wholesale') {
+        showToast('Retail customer saved. Switch channel to Retail to use it.', 'info');
+      } else if (state.customers.some((entry) => entry.id === customer.id)) {
+        dom.invoiceCustomer.value = customer.id;
+      }
+
+      resetBillingCustomerForm();
+      showToast(`Customer ${customer.name} saved`);
+      setStatus('Ready');
+      dom.invoiceCustomer.focus();
+    } catch (error) {
+      setStatus('Ready');
+      showToast(error.message, 'error');
+    }
   });
 
   dom.invoiceSubmitBtn.addEventListener('click', async () => {
@@ -1271,6 +1409,31 @@ function resetProductForm() {
   setSelectValueWithFallback(dom.productForm.querySelector('#product-category'), 'General');
   setSelectValueWithFallback(dom.productForm.querySelector('#product-unit'), 'Unit');
   dom.productSaveBtn.textContent = 'Save Product';
+}
+
+function resetPurchaseProductForm() {
+  dom.purchaseProductForm.reset();
+  setSelectValueWithFallback(dom.purchaseProductCategory, 'General');
+  setSelectValueWithFallback(dom.purchaseProductUnit, 'Unit');
+  dom.purchaseProductWholesaleMinQty.value = '';
+  dom.purchaseProductReorderLevel.value = '';
+}
+
+function resetPurchaseSupplierForm() {
+  dom.purchaseSupplierForm.reset();
+}
+
+function syncBillingQuickCustomerType() {
+  if (dom.invoiceChannel.value === 'wholesale') {
+    dom.billingCustomerType.value = 'wholesale';
+  } else {
+    dom.billingCustomerType.value = 'retail';
+  }
+}
+
+function resetBillingCustomerForm() {
+  dom.billingCustomerForm.reset();
+  syncBillingQuickCustomerType();
 }
 
 function fillProductForm(product) {
@@ -1867,10 +2030,21 @@ function renderExpenses() {
 }
 
 function renderBillingProductOptions() {
-  const productsWithStock = state.products.filter((product) => product.stock > 0);
+  const selectedProductId = dom.draftProductId.value;
+  let productsWithStock = state.products.filter((product) => product.stock > 0);
+  const search = state.billingProductSearch;
+
+  if (search) {
+    productsWithStock = productsWithStock.filter((product) => {
+      const text = `${product.name} ${product.sku} ${product.barcode || ''}`.toLowerCase();
+      return text.includes(search);
+    });
+  }
 
   if (!productsWithStock.length) {
-    dom.draftProductId.innerHTML = '<option value="">No stock available</option>';
+    dom.draftProductId.innerHTML = search
+      ? '<option value="">No matching product</option>'
+      : '<option value="">No stock available</option>';
     return;
   }
 
@@ -1883,6 +2057,12 @@ function renderBillingProductOptions() {
       `
     )
     .join('');
+
+  if (productsWithStock.some((product) => product.id === selectedProductId)) {
+    dom.draftProductId.value = selectedProductId;
+  } else {
+    dom.draftProductId.value = productsWithStock[0].id;
+  }
 }
 
 function renderBillingCustomerOptions() {
@@ -2063,10 +2243,13 @@ function clearInvoiceDraft() {
   dom.invoiceDiscount.value = '0';
   dom.invoicePaid.value = '';
   dom.invoiceNotes.value = '';
+  state.billingProductSearch = '';
+  dom.billingProductSearch.value = '';
   dom.draftQty.value = '1';
   dom.barcodeInput.value = '';
 
   renderBillingCustomerOptions();
+  resetBillingCustomerForm();
   renderDraftItems();
 }
 
@@ -2281,6 +2464,11 @@ async function initializeApp() {
   dom.purchaseGstRate.disabled = !dom.purchaseGstEnabled.checked;
   dom.reportDate.value = todayKey();
   dom.expenseDate.value = todayKey();
+  state.billingProductSearch = '';
+  dom.billingProductSearch.value = '';
+  resetPurchaseSupplierForm();
+  resetPurchaseProductForm();
+  resetBillingCustomerForm();
 
   try {
     setStatus('Loading data...');

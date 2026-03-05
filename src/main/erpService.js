@@ -665,9 +665,15 @@ function createErpService() {
     const fallbackCost =
       Number.isFinite(wholesalePrice) && wholesalePrice > 0 ? wholesalePrice : retailPrice;
     const costPrice = round2(toNumber(payload.costPrice, fallbackCost));
-    const wholesaleMinQty = round2(toNumber(payload.wholesaleMinQty, NaN));
+    const wholesaleMinQtyText = toText(payload.wholesaleMinQty);
+    const wholesaleMinQty = wholesaleMinQtyText
+      ? round2(toNumber(wholesaleMinQtyText, NaN))
+      : 1;
     const stock = round2(toNumber(payload.stock, NaN));
-    const reorderLevel = round2(toNumber(payload.reorderLevel, NaN));
+    const reorderLevelText = toText(payload.reorderLevel);
+    const reorderLevel = reorderLevelText
+      ? round2(toNumber(reorderLevelText, NaN))
+      : 0;
 
     assert(name.length > 0, 'Product name is required');
     assert(Number.isFinite(costPrice) && costPrice > 0, 'Cost price must be greater than 0');
@@ -675,7 +681,7 @@ function createErpService() {
     assert(Number.isFinite(wholesalePrice) && wholesalePrice > 0, 'Wholesale price must be greater than 0');
     assert(
       Number.isFinite(wholesaleMinQty) && wholesaleMinQty >= 1,
-      'Wholesale minimum quantity must be at least 1'
+      'Wholesale minimum quantity must be at least 1 when provided'
     );
     assert(Number.isFinite(stock) && stock >= 0, 'Stock cannot be negative');
     assert(Number.isFinite(reorderLevel) && reorderLevel >= 0, 'Reorder level cannot be negative');

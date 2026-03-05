@@ -255,8 +255,8 @@
               </label>
 
               <label>
-                Wholesale Min Qty
-                <input id="product-wholesale-min-qty" type="number" min="1" step="0.01" required />
+                Wholesale Min Qty (Optional)
+                <input id="product-wholesale-min-qty" type="number" min="1" step="0.01" placeholder="Default 1" />
               </label>
 
               <label>
@@ -265,8 +265,8 @@
               </label>
 
               <label>
-                Reorder Level
-                <input id="product-reorder-level" type="number" min="0" step="0.01" required />
+                Reorder Level (Optional)
+                <input id="product-reorder-level" type="number" min="0" step="0.01" placeholder="Default 0" />
               </label>
 
               <div class="actions-row">
@@ -501,6 +501,129 @@
                   <textarea id="purchase-notes" rows="2" placeholder="Optional remarks"></textarea>
                 </label>
               </form>
+
+              <article class="panel mt12">
+                <header class="panel-head">
+                  <h3>Quick Add Supplier</h3>
+                  <p>Create a supplier without leaving purchase entry.</p>
+                </header>
+
+                <form id="purchase-supplier-form" class="form-grid">
+                  <label>
+                    Supplier Name
+                    <input id="purchase-supplier-name" required />
+                  </label>
+
+                  <label>
+                    Phone
+                    <input id="purchase-supplier-phone" />
+                  </label>
+
+                  <label>
+                    GSTIN (Optional)
+                    <input id="purchase-supplier-gstin" placeholder="Optional" />
+                  </label>
+
+                  <label class="full-width">
+                    Address
+                    <textarea id="purchase-supplier-address" rows="2"></textarea>
+                  </label>
+
+                  <div class="actions-row">
+                    <button type="submit" class="btn subtle" id="purchase-supplier-save-btn">Save Supplier</button>
+                  </div>
+                </form>
+              </article>
+
+              <article class="panel mt12">
+                <header class="panel-head">
+                  <h3>Quick Add Product (Zero Stock)</h3>
+                  <p>Add a new item now and receive stock through this purchase.</p>
+                </header>
+
+                <form id="purchase-product-form" class="form-grid three-col">
+                  <label>
+                    Product Name
+                    <input id="purchase-product-name" placeholder="Item name" required />
+                  </label>
+
+                  <label>
+                    Barcode (Optional)
+                    <input id="purchase-product-barcode" placeholder="Scan or enter barcode" />
+                  </label>
+
+                  <label>
+                    Category
+                    <select id="purchase-product-category">
+                      <option value="General">General</option>
+                      <option value="Essentials">Essentials</option>
+                      <option value="Grains">Grains</option>
+                      <option value="Pulses">Pulses</option>
+                      <option value="Spices">Spices</option>
+                      <option value="Cooking Oil">Cooking Oil</option>
+                      <option value="Dairy">Dairy</option>
+                      <option value="Beverages">Beverages</option>
+                      <option value="Snacks">Snacks</option>
+                      <option value="Bakery">Bakery</option>
+                      <option value="Frozen">Frozen</option>
+                      <option value="Fruits & Vegetables">Fruits & Vegetables</option>
+                      <option value="Household">Household</option>
+                      <option value="Personal Care">Personal Care</option>
+                    </select>
+                  </label>
+
+                  <label>
+                    Unit
+                    <select id="purchase-product-unit">
+                      <option value="Unit">Unit</option>
+                      <option value="Piece">Piece</option>
+                      <option value="Pack">Pack</option>
+                      <option value="Packet">Packet</option>
+                      <option value="Bag">Bag</option>
+                      <option value="Bottle">Bottle</option>
+                      <option value="Box">Box</option>
+                      <option value="Pouch">Pouch</option>
+                      <option value="Can">Can</option>
+                      <option value="Jar">Jar</option>
+                      <option value="Kg">Kg</option>
+                      <option value="Gram">Gram</option>
+                      <option value="Litre">Litre</option>
+                      <option value="ml">ml</option>
+                      <option value="Dozen">Dozen</option>
+                      <option value="Carton">Carton</option>
+                    </select>
+                  </label>
+
+                  <label>
+                    Cost Price
+                    <input id="purchase-product-cost-price" type="number" min="0.01" step="0.01" required />
+                  </label>
+
+                  <label>
+                    Retail Price
+                    <input id="purchase-product-retail-price" type="number" min="0.01" step="0.01" required />
+                  </label>
+
+                  <label>
+                    Wholesale Price
+                    <input id="purchase-product-wholesale-price" type="number" min="0.01" step="0.01" required />
+                  </label>
+
+                  <label>
+                    Wholesale Min Qty (Optional)
+                    <input id="purchase-product-wholesale-min-qty" type="number" min="1" step="0.01" placeholder="Default 1" />
+                  </label>
+
+                  <label>
+                    Reorder Level (Optional)
+                    <input id="purchase-product-reorder-level" type="number" min="0" step="0.01" placeholder="Default 0" />
+                  </label>
+
+                  <div class="actions-row">
+                    <button type="submit" class="btn subtle" id="purchase-product-save-btn">Save Product (Stock 0)</button>
+                  </div>
+                </form>
+              </article>
             </article>
 
             <article class="panel">
@@ -709,6 +832,47 @@
                   <textarea id="invoice-notes" rows="2" placeholder="Optional remarks"></textarea>
                 </label>
               </form>
+
+              <article class="panel mt12">
+                <header class="panel-head">
+                  <h3>Quick Add Customer</h3>
+                  <p>Create customer directly while billing.</p>
+                </header>
+
+                <form id="billing-customer-form" class="form-grid">
+                  <label>
+                    Customer Name
+                    <input id="billing-customer-name" required />
+                  </label>
+
+                  <label>
+                    Customer Type
+                    <select id="billing-customer-type">
+                      <option value="retail">Retail</option>
+                      <option value="wholesale">Wholesale</option>
+                    </select>
+                  </label>
+
+                  <label>
+                    Phone
+                    <input id="billing-customer-phone" />
+                  </label>
+
+                  <label>
+                    GSTIN (Optional)
+                    <input id="billing-customer-gstin" placeholder="Optional" />
+                  </label>
+
+                  <label class="full-width">
+                    Address
+                    <textarea id="billing-customer-address" rows="2"></textarea>
+                  </label>
+
+                  <div class="actions-row">
+                    <button type="submit" class="btn subtle" id="billing-customer-save-btn">Save Customer</button>
+                  </div>
+                </form>
+              </article>
             </article>
 
             <article class="panel">
@@ -723,6 +887,14 @@
                   <input id="barcode-input" placeholder="Focus here and scan barcode" />
                 </label>
                 <small>Scanner should act as keyboard input and hit Enter automatically.</small>
+              </div>
+
+              <div class="scan-box">
+                <label>
+                  Search Product (Name / SKU / Barcode)
+                  <input id="billing-product-search" placeholder="Type product name or SKU" />
+                </label>
+                <small>Filters product dropdown for manual add.</small>
               </div>
 
               <div class="quick-row">
