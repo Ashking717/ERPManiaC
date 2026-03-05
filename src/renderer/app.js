@@ -22,7 +22,8 @@ const state = {
   billingProductSearch: '',
   expenseSearch: '',
   selectedLedgerSupplierId: '',
-  pendingPurchaseBarcode: ''
+  pendingPurchaseBarcode: '',
+  purchaseOcrText: ''
 };
 
 const dom = {};
@@ -417,6 +418,7 @@ function cacheDom() {
   dom.productBody = document.getElementById('products-body');
   dom.productSaveBtn = document.getElementById('product-save-btn');
   dom.productResetBtn = document.getElementById('product-reset-btn');
+  dom.productStockPdfBtn = document.getElementById('product-stock-pdf-btn');
 
   dom.customerForm = document.getElementById('customer-form');
   dom.customerBody = document.getElementById('customers-body');
@@ -442,6 +444,8 @@ function cacheDom() {
   dom.purchasePaid = document.getElementById('purchase-paid');
   dom.purchaseNotes = document.getElementById('purchase-notes');
   dom.purchaseBarcodeInput = document.getElementById('purchase-barcode-input');
+  dom.purchaseOcrBtn = document.getElementById('purchase-ocr-btn');
+  dom.purchaseOcrFile = document.getElementById('purchase-ocr-file');
 
   dom.purchaseDraftProductId = document.getElementById('purchase-draft-product-id');
   dom.purchaseDraftQty = document.getElementById('purchase-draft-qty');
@@ -495,6 +499,12 @@ function cacheDom() {
   );
   dom.purchaseUnknownCancelBtn = document.getElementById('purchase-unknown-cancel-btn');
   dom.purchaseUnknownSaveBtn = document.getElementById('purchase-unknown-save-btn');
+  dom.purchaseOcrModal = document.getElementById('purchase-ocr-modal');
+  dom.purchaseOcrText = document.getElementById('purchase-ocr-text');
+  dom.purchaseOcrMeta = document.getElementById('purchase-ocr-meta');
+  dom.purchaseOcrCloseBtn = document.getElementById('purchase-ocr-close-btn');
+  dom.purchaseOcrApplyBtn = document.getElementById('purchase-ocr-apply-btn');
+  dom.purchaseOcrAddItemsBtn = document.getElementById('purchase-ocr-add-items-btn');
 
   dom.expenseForm = document.getElementById('expense-form');
   dom.expenseCategory = document.getElementById('expense-category');
@@ -696,6 +706,24 @@ function bindLicense() {
 }
 
 function bindProducts() {
+  if (dom.productStockPdfBtn) {
+    dom.productStockPdfBtn.addEventListener('click', async () => {
+      try {
+        setStatus('Generating stock list PDF...');
+        const result = await invoke('exportStockListPdf');
+        if (result && result.saved) {
+          showToast('Stock list PDF saved');
+        } else {
+          showToast('Stock list PDF export cancelled', 'info');
+        }
+        setStatus('Live');
+      } catch (error) {
+        setStatus('Live');
+        showToast(error.message, 'error');
+      }
+    });
+  }
+
   dom.productForm.addEventListener('submit', async (event) => {
     event.preventDefault();
 
@@ -1002,6 +1030,43 @@ function bindPurchases() {
     }
     processPurchaseBarcodeScan();
   });
+
+  if (dom.purchaseOcrBtn && dom.purchaseOcrFile) {
+    dom.purchaseOcrBtn.addEventListener('click', () => {
+      dom.purchaseOcrFile.click();
+    });
+
+    dom.purchaseOcrFile.addEventListener('change', async (event) => {
+      const input = event.target;
+      const file = input && input.files && input.files[0] ? input.files[0] : null;
+      await runPurchaseOcr(file);
+    });
+  }
+
+  if (dom.purchaseOcrCloseBtn) {
+    dom.purchaseOcrCloseBtn.addEventListener('click', () => {
+      closePurchaseOcrModal();
+      dom.purchaseBarcodeInput.focus();
+    });
+  }
+
+  if (dom.purchaseOcrApplyBtn) {
+    dom.purchaseOcrApplyBtn.addEventListener('click', () => {
+      applyPurchaseOcrToNotes();
+    });
+  }
+
+  if (dom.purchaseOcrAddItemsBtn) {
+    dom.purchaseOcrAddItemsBtn.addEventListener('click', () => {
+      applyPurchaseOcrToDraft();
+    });
+  }
+
+  if (dom.purchaseOcrModal) {
+    dom.purchaseOcrModal.addEventListener('close', () => {
+      dom.purchaseBarcodeInput.focus();
+    });
+  }
 
   [dom.purchaseDraftQty, dom.purchaseDraftCost].forEach((input) => {
     input.addEventListener('keydown', (event) => {
@@ -1719,6 +1784,287 @@ function openPurchaseUnknownBarcodeModal(barcode) {
   }
 
   dom.purchaseUnknownProductName.focus();
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => {
+      reject(new Error('Failed to read selected file'));
+    };
+    reader.onload = () => {
+      const output = String(reader.result || '');
+      resolve(output);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function closePurchaseOcrModal() {
+  const modal = dom.purchaseOcrModal;
+  if (!modal || !modal.open) {
+    return;
+  }
+
+  if (typeof modal.close === 'function') {
+    modal.close();
+  } else {
+    modal.removeAttribute('open');
+  }
+}
+
+function openPurchaseOcrModal(payload) {
+  const modal = dom.purchaseOcrModal;
+  if (!modal) {
+    return;
+  }
+
+  const text = String(payload && payload.text ? payload.text : '').trim();
+  const confidence = round2(toNumber(payload && payload.confidence, 0));
+  state.purchaseOcrText = text;
+  dom.purchaseOcrText.value = text || '';
+  dom.purchaseOcrMeta.textContent = text
+    ? `Confidence: ${confidence.toFixed(2)}% • Use "Auto Add Items" to fill purchase draft`
+    : 'No text detected. Try a clearer image.';
+
+  if (typeof modal.showModal === 'function') {
+    if (!modal.open) {
+      modal.showModal();
+    }
+  } else {
+    modal.setAttribute('open', 'open');
+  }
+}
+
+function normalizeOcrTokenText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isOcrSummaryLine(line) {
+  const text = normalizeOcrTokenText(line);
+  if (!text || text.length < 4) {
+    return true;
+  }
+
+  if (/^\d+$/.test(text)) {
+    return true;
+  }
+
+  return /\b(total|subtotal|grand|gst|cgst|sgst|tax|discount|amount|invoice|bill|date|time|cash|upi|balance|change|round|phone|address|thanks)\b/i.test(
+    text
+  );
+}
+
+function findProductByOcrLine(line) {
+  const rawLine = String(line || '').trim();
+  if (!rawLine) {
+    return null;
+  }
+
+  const scanTokens = rawLine.match(/[A-Za-z0-9]{4,}/g) || [];
+  for (const token of scanTokens) {
+    const direct = findProductByBarcodeOrSku(token);
+    if (direct) {
+      return direct;
+    }
+  }
+
+  const normalizedLine = normalizeOcrTokenText(rawLine);
+  if (!normalizedLine) {
+    return null;
+  }
+
+  const lineWords = new Set(normalizedLine.split(' ').filter((word) => word.length > 2));
+  let best = null;
+  let bestScore = 0;
+
+  for (const product of state.products) {
+    const normalizedName = normalizeOcrTokenText(product.name);
+    if (!normalizedName || normalizedName.length < 3) {
+      continue;
+    }
+
+    if (normalizedLine.includes(normalizedName)) {
+      const exactScore = normalizedName.length + 100;
+      if (exactScore > bestScore) {
+        best = product;
+        bestScore = exactScore;
+      }
+      continue;
+    }
+
+    const nameWords = normalizedName.split(' ').filter((word) => word.length > 2);
+    if (!nameWords.length) {
+      continue;
+    }
+
+    let hitCount = 0;
+    for (const word of nameWords) {
+      if (lineWords.has(word)) {
+        hitCount += 1;
+      }
+    }
+
+    const ratio = hitCount / nameWords.length;
+    if (ratio >= 0.66) {
+      const score = ratio * 100 + normalizedName.length;
+      if (score > bestScore) {
+        best = product;
+        bestScore = score;
+      }
+    }
+  }
+
+  return bestScore >= 70 ? best : null;
+}
+
+function deriveOcrQtyAndCost(line, product) {
+  const fallbackCost = round2(toNumber(product.costPrice, product.wholesalePrice));
+  const compactLine = String(line || '').replace(/,/g, '');
+  const pairMatch = /(\d+(?:\.\d+)?)\s*(?:x|X|\*)\s*(\d+(?:\.\d+)?)/.exec(compactLine);
+
+  let qty = 1;
+  let unitCost = fallbackCost;
+
+  if (pairMatch) {
+    qty = toNumber(pairMatch[1], 1);
+    unitCost = toNumber(pairMatch[2], fallbackCost);
+  } else {
+    const numbers = (compactLine.match(/\d+(?:\.\d+)?/g) || [])
+      .map((token) => Number(token))
+      .filter((value) => Number.isFinite(value) && value > 0);
+
+    if (numbers.length >= 3) {
+      qty = numbers[numbers.length - 3];
+      unitCost = numbers[numbers.length - 2];
+    } else if (numbers.length === 2) {
+      qty = numbers[0] <= 200 ? numbers[0] : 1;
+      unitCost = numbers[1];
+    } else if (numbers.length === 1) {
+      if (numbers[0] <= 200) {
+        qty = numbers[0];
+      } else {
+        unitCost = numbers[0];
+      }
+    }
+  }
+
+  if (!Number.isFinite(qty) || qty <= 0 || qty > 100000) {
+    qty = 1;
+  }
+  if (!Number.isFinite(unitCost) || unitCost <= 0 || unitCost > 10000000) {
+    unitCost = fallbackCost;
+  }
+
+  return {
+    qty: round2(qty),
+    unitCost: round2(unitCost)
+  };
+}
+
+function applyPurchaseOcrToDraft() {
+  const text = String(state.purchaseOcrText || '').trim();
+  if (!text) {
+    showToast('No OCR text to process', 'error');
+    return;
+  }
+
+  const lines = text
+    .split(/\r?\n/g)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  if (!lines.length) {
+    showToast('No OCR lines to process', 'error');
+    return;
+  }
+
+  let addedCount = 0;
+  let matchedCount = 0;
+
+  for (const line of lines) {
+    if (isOcrSummaryLine(line)) {
+      continue;
+    }
+
+    const product = findProductByOcrLine(line);
+    if (!product) {
+      continue;
+    }
+
+    matchedCount += 1;
+    const parsed = deriveOcrQtyAndCost(line, product);
+    const added = addPurchaseDraftItem(product.id, parsed.qty, parsed.unitCost);
+    if (added) {
+      addedCount += 1;
+    }
+  }
+
+  if (!addedCount) {
+    showToast('No purchase items matched from OCR text', 'error');
+    return;
+  }
+
+  closePurchaseOcrModal();
+  showToast(`OCR added ${addedCount} item line(s) to purchase (${matchedCount} matched)`);
+  dom.purchaseBarcodeInput.focus();
+}
+
+function applyPurchaseOcrToNotes() {
+  const text = String(state.purchaseOcrText || '').trim();
+  if (!text) {
+    showToast('No OCR text to apply', 'error');
+    return;
+  }
+
+  const current = dom.purchaseNotes.value.trim();
+  const merged = current
+    ? `${current}\n\n[OCR Extracted]\n${text}`
+    : `[OCR Extracted]\n${text}`;
+  dom.purchaseNotes.value = merged;
+  closePurchaseOcrModal();
+  showToast('OCR text added to purchase notes');
+  dom.purchaseNotes.focus();
+}
+
+async function runPurchaseOcr(file) {
+  if (!file) {
+    if (dom.purchaseOcrFile) {
+      dom.purchaseOcrFile.value = '';
+    }
+    return;
+  }
+
+  const fileType = String(file.type || '').toLowerCase();
+  if (!fileType.startsWith('image/')) {
+    showToast('Please select an image file for OCR', 'error');
+    if (dom.purchaseOcrFile) {
+      dom.purchaseOcrFile.value = '';
+    }
+    return;
+  }
+
+  const previousStatus = dom.statusPill.textContent;
+
+  try {
+    setStatus('Running OCR...');
+    const imageDataUrl = await readFileAsDataUrl(file);
+    const result = await invoke('extractEnglishOcr', {
+      imageDataUrl,
+      fileName: file.name
+    });
+    openPurchaseOcrModal(result || { text: '', confidence: 0 });
+    setStatus(previousStatus);
+  } catch (error) {
+    setStatus(previousStatus);
+    showToast(error.message, 'error');
+  } finally {
+    dom.purchaseOcrFile.value = '';
+  }
 }
 
 function resetPurchaseSupplierForm() {

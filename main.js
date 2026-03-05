@@ -1,7 +1,9 @@
+const fs = require('fs');
 const path = require('path');
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const { createErpService } = require('./src/main/erpService');
 const { renderInvoiceHtml } = require('./src/main/invoiceTemplate');
+const { renderStockListHtml } = require('./src/main/stockListTemplate');
 
 let mainWindow;
 let erpService;
@@ -116,6 +118,60 @@ async function previewInvoice(invoiceId) {
   return { opened: true };
 }
 
+function toSafeFilePart(value, fallback = 'ERPManiaC') {
+  const cleaned = String(value || '')
+    .replace(/[\\/:*?"<>|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned || fallback;
+}
+
+async function exportStockListPdf() {
+  const payload = erpService.getStockListForPrint();
+  const html = renderStockListHtml(payload);
+  const dateKey = new Date().toISOString().slice(0, 10);
+  const baseName = toSafeFilePart(payload.business && payload.business.name, 'ERPManiaC');
+  const defaultFileName = `${baseName} Stock List ${dateKey}.pdf`;
+  const defaultPath = path.join(app.getPath('documents'), defaultFileName);
+
+  const saveResult = await dialog.showSaveDialog(mainWindow || undefined, {
+    title: 'Save Stock List PDF',
+    defaultPath,
+    filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
+  });
+
+  if (saveResult.canceled || !saveResult.filePath) {
+    return { saved: false, canceled: true };
+  }
+
+  const pdfWindow = new BrowserWindow({
+    show: false,
+    width: 1100,
+    height: 800,
+    webPreferences: {
+      sandbox: true
+    }
+  });
+
+  try {
+    await pdfWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    const pdfData = await pdfWindow.webContents.printToPDF({
+      printBackground: true,
+      pageSize: 'A4',
+      margins: {
+        marginType: 'printableArea'
+      }
+    });
+
+    fs.writeFileSync(saveResult.filePath, pdfData);
+    return { saved: true, filePath: saveResult.filePath };
+  } finally {
+    if (!pdfWindow.isDestroyed()) {
+      pdfWindow.close();
+    }
+  }
+}
+
 function registerIpc() {
   ipcMain.handle('erp:get-bootstrap', withResponse(() => erpService.getBootstrap()));
   ipcMain.handle('erp:get-license-status', withResponse(() => erpService.getLicenseStatus()));
@@ -150,6 +206,10 @@ function registerIpc() {
   );
   ipcMain.handle('erp:create-expense', withResponse((payload) => erpService.createExpense(payload)));
   ipcMain.handle(
+    'erp:extract-english-ocr',
+    withResponse((payload) => erpService.extractEnglishOcr(payload))
+  );
+  ipcMain.handle(
     'erp:get-supplier-ledger',
     withResponse((supplierId) => erpService.getSupplierLedger(supplierId))
   );
@@ -160,6 +220,7 @@ function registerIpc() {
   ipcMain.handle('erp:get-invoice', withResponse((invoiceId) => erpService.getInvoice(invoiceId)));
   ipcMain.handle('erp:preview-invoice', withResponse((invoiceId) => previewInvoice(invoiceId)));
   ipcMain.handle('erp:print-invoice', withResponse((invoiceId) => printInvoice(invoiceId)));
+  ipcMain.handle('erp:export-stock-list-pdf', withResponse(() => exportStockListPdf()));
 }
 
 app.whenReady().then(() => {

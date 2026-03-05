@@ -1,4 +1,8 @@
+const fs = require('fs');
+const path = require('path');
+const http = require('http');
 const { randomUUID, createHash } = require('crypto');
+const { app } = require('electron');
 const { LocalStore, nowIso, clone } = require('./store');
 
 const LICENSE_MAX_KEYS = 36;
@@ -6,6 +10,9 @@ const LICENSE_KEY_DAYS = 30;
 const LICENSE_SECRET = 'ERPMANIA-LICENSE-2026';
 const LICENSE_DAYS_MS = LICENSE_KEY_DAYS * 24 * 60 * 60 * 1000;
 const GOD_LICENSE_KEY = '909090909090';
+const OCR_LANGUAGE = 'eng';
+const OCR_LANG_BASENAME = `${OCR_LANGUAGE}.traineddata`;
+const OCR_LANG_GZIP_BASENAME = `${OCR_LANG_BASENAME}.gz`;
 
 function assert(condition, message) {
   if (!condition) {
@@ -639,6 +646,140 @@ function buildDashboard(data) {
       createdAt: purchase.createdAt
     }))
   };
+}
+
+let cachedTesseractModule = null;
+let cachedOcrLangServerPromise = null;
+
+function fileExists(filePath) {
+  try {
+    fs.accessSync(filePath, fs.constants.R_OK);
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function resolveOcrLanguageSource() {
+  const candidates = [];
+
+  if (process.resourcesPath) {
+    candidates.push(path.join(process.resourcesPath, 'assets', 'ocr'));
+  }
+
+  if (app && typeof app.getAppPath === 'function') {
+    candidates.push(path.join(app.getAppPath(), 'assets', 'ocr'));
+  }
+
+  candidates.push(path.join(__dirname, '..', '..', 'assets', 'ocr'));
+  candidates.push(path.join(process.cwd(), 'assets', 'ocr'));
+
+  const uniqueCandidates = Array.from(new Set(candidates));
+
+  for (const folder of uniqueCandidates) {
+    const gzipFile = path.join(folder, OCR_LANG_GZIP_BASENAME);
+    if (fileExists(gzipFile)) {
+      return {
+        filePath: gzipFile,
+        requestPath: `/${OCR_LANG_GZIP_BASENAME}`,
+        gzip: true
+      };
+    }
+
+    const plainFile = path.join(folder, OCR_LANG_BASENAME);
+    if (fileExists(plainFile)) {
+      return {
+        filePath: plainFile,
+        requestPath: `/${OCR_LANG_BASENAME}`,
+        gzip: false
+      };
+    }
+  }
+
+  throw new Error(
+    'OCR language data not found. Run "npm run ocr:download-eng" to install English OCR data.'
+  );
+}
+
+function createOcrLanguageServer() {
+  const source = resolveOcrLanguageSource();
+  const languageData = fs.readFileSync(source.filePath);
+  assert(
+    languageData && languageData.length > 0,
+    'OCR language data is empty. Re-run "npm run ocr:download-eng".'
+  );
+
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((request, response) => {
+      const requestUrl = new URL(request.url || '/', 'http://127.0.0.1');
+      if (requestUrl.pathname !== source.requestPath) {
+        response.statusCode = 404;
+        response.end('Not Found');
+        return;
+      }
+
+      response.statusCode = 200;
+      response.setHeader('Content-Type', 'application/octet-stream');
+      response.setHeader('Content-Length', String(languageData.length));
+      response.setHeader('Cache-Control', 'no-store');
+      response.end(languageData);
+    });
+
+    server.once('error', (error) => {
+      reject(error);
+    });
+
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address !== 'object' || !address.port) {
+        reject(new Error('Failed to start local OCR language server'));
+        return;
+      }
+
+      resolve({
+        server,
+        langPath: `http://127.0.0.1:${address.port}`,
+        gzip: source.gzip
+      });
+    });
+  });
+}
+
+async function getOcrLanguageServer() {
+  if (!cachedOcrLangServerPromise) {
+    cachedOcrLangServerPromise = createOcrLanguageServer().catch((error) => {
+      cachedOcrLangServerPromise = null;
+      throw error;
+    });
+  }
+
+  return cachedOcrLangServerPromise;
+}
+
+function decodeBase64ImageDataUrl(imageDataUrl) {
+  const value = toText(imageDataUrl);
+  assert(value, 'Select an image to run OCR');
+
+  const match = /^data:image\/[a-z0-9.+-]+;base64,([a-z0-9+/=]+)$/i.exec(value);
+  assert(match, 'OCR supports image files only');
+
+  const buffer = Buffer.from(match[1], 'base64');
+  assert(buffer.length > 0, 'Invalid image data');
+  return buffer;
+}
+
+function getTesseractModule() {
+  if (cachedTesseractModule) {
+    return cachedTesseractModule;
+  }
+
+  try {
+    cachedTesseractModule = require('tesseract.js');
+  } catch (_error) {
+    throw new Error('OCR engine not installed. Run "npm install" and try again.');
+  }
+
+  return cachedTesseractModule;
 }
 
 function createErpService() {
@@ -1425,6 +1566,31 @@ function createErpService() {
     return clone(createdExpense);
   }
 
+  async function extractEnglishOcr(payload) {
+    assertLicenseActive();
+
+    const imageDataUrl = payload && payload.imageDataUrl;
+    const imageBuffer = decodeBase64ImageDataUrl(imageDataUrl);
+    const ocrLanguageServer = await getOcrLanguageServer();
+    const Tesseract = getTesseractModule();
+    const result = await Tesseract.recognize(imageBuffer, OCR_LANGUAGE, {
+      langPath: ocrLanguageServer.langPath,
+      gzip: ocrLanguageServer.gzip,
+      cacheMethod: 'none',
+      // Prevent uncaught exceptions from bubbling out of worker internals.
+      errorHandler: () => {},
+      // Accuracy-first config for printed bills.
+      user_defined_dpi: '300',
+      preserve_interword_spaces: '1'
+    });
+
+    const data = result && result.data ? result.data : {};
+    return {
+      text: toText(data.text),
+      confidence: round2(toNumber(data.confidence, 0))
+    };
+  }
+
   function getSupplierLedger(supplierId) {
     assertLicenseActive();
 
@@ -1634,6 +1800,19 @@ function createErpService() {
     };
   }
 
+  function getStockListForPrint() {
+    assertLicenseActive();
+
+    const data = store.get();
+    const products = [...data.products].sort((a, b) => a.name.localeCompare(b.name));
+
+    return {
+      business: clone(data.meta.business),
+      products: clone(products),
+      generatedAt: nowIso()
+    };
+  }
+
   return {
     getBootstrap,
     getLicenseStatus,
@@ -1651,10 +1830,12 @@ function createErpService() {
     createPurchase,
     createSupplierPayment,
     createExpense,
+    extractEnglishOcr,
     getSupplierLedger,
     getDailyProfitLoss,
     getInvoice,
-    getInvoiceForPrint
+    getInvoiceForPrint,
+    getStockListForPrint
   };
 }
 

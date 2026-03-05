@@ -8,9 +8,13 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "check": "node --check main.js && node --check preload.js && node --check src/main/store.js && node --check src/main/erpService.js && node --check src/main/invoiceTemplate.js && node --check src/renderer/app.js",
+    "check": "node --check main.js && node --check preload.js && node --check src/main/store.js && node --check src/main/erpService.js && node --check src/main/invoiceTemplate.js && node --check src/main/stockListTemplate.js && node --check src/renderer/app.js",
     "license:keys": "node scripts/generate-license-codes.js",
-    "logo:generate": "node scripts/generate-logo.js"
+    "logo:generate": "node scripts/generate-logo.js",
+    "ocr:download-eng": "node scripts/download-ocr-eng.js"
+  },
+  "dependencies": {
+    "tesseract.js": "^5.1.1"
   },
   "devDependencies": {
     "electron": "^30.0.0",

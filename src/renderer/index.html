@@ -290,8 +290,9 @@
           </article>
 
           <article class="panel">
-            <header class="panel-head">
+            <header class="panel-head split">
               <h3>Product List</h3>
+              <button type="button" class="btn subtle" id="product-stock-pdf-btn">Stock List PDF</button>
             </header>
             <div class="table-wrap">
               <table>
@@ -640,10 +641,14 @@
             </article>
 
             <article class="panel">
-              <header class="panel-head">
-                <h3>Add Purchase Items</h3>
-                <p>Use barcode scanner or manual selection.</p>
+              <header class="panel-head split">
+                <div>
+                  <h3>Add Purchase Items</h3>
+                  <p>Use barcode scanner or manual selection.</p>
+                </div>
+                <button type="button" class="btn subtle" id="purchase-ocr-btn">OCR Bill (EN)</button>
               </header>
+              <input id="purchase-ocr-file" type="file" accept="image/*" hidden />
 
               <div class="scan-box">
                 <label>
@@ -1148,6 +1153,28 @@
           <button type="submit" class="btn primary" id="purchase-unknown-save-btn">Save & Add Item</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="purchase-ocr-modal" class="quick-modal">
+      <div class="quick-modal-card form-grid">
+        <header class="panel-head">
+          <h3>Purchase OCR (English)</h3>
+          <p>Review extracted text and apply it to purchase notes.</p>
+        </header>
+
+        <label class="full-width">
+          Extracted Text
+          <textarea id="purchase-ocr-text" rows="12" readonly></textarea>
+        </label>
+
+        <p class="muted" id="purchase-ocr-meta">No OCR run yet.</p>
+
+        <div class="actions-row">
+          <button type="button" class="btn success" id="purchase-ocr-add-items-btn">Auto Add Items</button>
+          <button type="button" class="btn subtle" id="purchase-ocr-close-btn">Close</button>
+          <button type="button" class="btn primary" id="purchase-ocr-apply-btn">Use In Notes</button>
+        </div>
+      </div>
     </dialog>
 
     <div id="toast" class="toast"></div>
