@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ERPManiaC Grocery ERP</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="backdrop"></div>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <h1>ERPManiaC</h1>
+          <p id="brand-shop-name">Grocery Offline ERP</p>
+        </div>
+
+        <nav class="nav" id="main-nav">
+          <button class="nav-btn active" data-view="dashboard" title="Alt+1">
+            <span>Dashboard</span><kbd>Alt+1</kbd>
+          </button>
+          <button class="nav-btn" data-view="store" title="Alt+2">
+            <span>Store</span><kbd>Alt+2</kbd>
+          </button>
+          <button class="nav-btn" data-view="products" title="Alt+3">
+            <span>Products</span><kbd>Alt+3</kbd>
+          </button>
+          <button class="nav-btn" data-view="customers" title="Alt+4">
+            <span>Customers</span><kbd>Alt+4</kbd>
+          </button>
+          <button class="nav-btn" data-view="suppliers" title="Alt+5">
+            <span>Suppliers</span><kbd>Alt+5</kbd>
+          </button>
+          <button class="nav-btn" data-view="purchases" title="Alt+6">
+            <span>Purchases</span><kbd>Alt+6</kbd>
+          </button>
+          <button class="nav-btn" data-view="expenses" title="Alt+0">
+            <span>Expenses</span><kbd>Alt+0</kbd>
+          </button>
+          <button class="nav-btn" data-view="billing" title="Alt+7">
+            <span>Billing</span><kbd>Alt+7</kbd>
+          </button>
+          <button class="nav-btn" data-view="invoices" title="Alt+8">
+            <span>Invoices</span><kbd>Alt+8</kbd>
+          </button>
+          <button class="nav-btn" data-view="reports" title="Alt+9">
+            <span>Reports</span><kbd>Alt+9</kbd>
+          </button>
+        </nav>
+
+        <div class="side-note">
+          <p>Offline mode enabled</p>
+          
+        </div>
+      </aside>
+
+      <main class="content">
+        <header class="top-bar">
+          <h2 id="view-title">Dashboard</h2>
+          <p id="status-pill">Live</p>
+        </header>
+
+        <section class="view active" id="view-dashboard">
+          <div class="card-grid" id="dashboard-cards"></div>
+
+          <div class="grid-two">
+            <article class="panel">
+              <header class="panel-head">
+                <h3>Low Stock Alerts</h3>
+              </header>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Product</th>
+                      <th>SKU</th>
+                      <th>Stock</th>
+                      <th>Reorder</th>
+                    </tr>
+                  </thead>
+                  <tbody id="low-stock-body"></tbody>
+                </table>
+              </div>
+            </article>
+
+            <article class="panel">
+              <header class="panel-head">
+                <h3>Recent Invoices</h3>
+              </header>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Invoice</th>
+                      <th>Channel</th>
+                      <th>Customer</th>
+                      <th>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody id="recent-invoices-body"></tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+
+          <div class="grid-two">
+            <article class="panel">
+              <header class="panel-head">
+                <h3>Recent Purchases</h3>
+              </header>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Purchase</th>
+                      <th>Supplier</th>
+                      <th>Total</th>
+                      <th>Balance</th>
+                    </tr>
+                  </thead>
+                  <tbody id="recent-purchases-body"></tbody>
+                </table>
+              </div>
+            </article>
+
+            <article class="panel">
+              <header class="panel-head">
+                <h3>Today Snapshot</h3>
+              </header>
+              <div class="snapshot" id="today-snapshot"></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" id="view-store">
+          <article class="panel">
+            <header class="panel-head">
+              <h3>Grocery Store Details</h3>
+              <p>These details are printed on invoices.</p>
+            </header>
+
+            <form id="business-form" class="form-grid">
+              <label>
+                Store Name
+                <input id="business-name" required />
+              </label>
+
+              <label>
+                Phone
+                <input id="business-phone" />
+              </label>
+
+              <label>
+                GSTIN (Optional)
+                <input id="business-gstin" placeholder="Optional" />
+              </label>
+
+              <label class="full-width">
+                Address
+                <textarea id="business-address" rows="2"></textarea>
+              </label>
+
+              <label>
+                Invoice Prefix (Auto)
+                <input id="business-invoice-prefix" readonly />
+              </label>
+
+              <div class="actions-row">
+                <button type="submit" class="btn primary" id="business-save-btn">Save Store Details</button>
+              </div>
+            </form>
+          </article>
+        </section>
+
+        <section class="view" id="view-products">
+          <article class="panel">
+            <header class="panel-head">
+              <h3>Product Master</h3>
+              <p>Maintain cost, retail and wholesale pricing.</p>
+            </header>
+
+            <form id="product-form" class="form-grid three-col">
+              <input type="hidden" id="product-id" />
+
+              <label>
+                SKU
+                <input id="product-sku" placeholder="Auto-generated from 10001" readonly />
+              </label>
+
+              <label>
+                Barcode
+                <input id="product-barcode" placeholder="Scan or enter barcode" />
+              </label>
+
+              <label>
+                Product Name
+                <input id="product-name" placeholder="Item name" required />
+              </label>
+
+              <label>
+                Category
+                <select id="product-category">
+                  <option value="General">General</option>
+                  <option value="Essentials">Essentials</option>
+                  <option value="Grains">Grains</option>
+                  <option value="Pulses">Pulses</option>
+                  <option value="Spices">Spices</option>
+                  <option value="Cooking Oil">Cooking Oil</option>
+                  <option value="Dairy">Dairy</option>
+                  <option value="Beverages">Beverages</option>
+                  <option value="Snacks">Snacks</option>
+                  <option value="Bakery">Bakery</option>
+                  <option value="Frozen">Frozen</option>
+                  <option value="Fruits & Vegetables">Fruits & Vegetables</option>
+                  <option value="Household">Household</option>
+                  <option value="Personal Care">Personal Care</option>
+                </select>
+              </label>
+
+              <label>
+                Unit
+                <select id="product-unit">
+                  <option value="Unit">Unit</option>
+                  <option value="Piece">Piece</option>
+                  <option value="Pack">Pack</option>
+                  <option value="Packet">Packet</option>
+                  <option value="Bag">Bag</option>
+                  <option value="Bottle">Bottle</option>
+                  <option value="Box">Box</option>
+                  <option value="Pouch">Pouch</option>
+                  <option value="Can">Can</option>
+                  <option value="Jar">Jar</option>
+                  <option value="Kg">Kg</option>
+                  <option value="Gram">Gram</option>
+                  <option value="Litre">Litre</option>
+                  <option value="ml">ml</option>
+                  <option value="Dozen">Dozen</option>
+                  <option value="Carton">Carton</option>
+                </select>
+              </label>
+
+              <label>
+                Cost Price
+                <input id="product-cost-price" type="number" min="0" step="0.01" required />
+              </label>
+
+              <label>
+                Retail Price
+                <input id="product-retail-price" type="number" min="0" step="0.01" required />
+              </label>
+
+              <label>
+                Wholesale Price
+                <input id="product-wholesale-price" type="number" min="0" step="0.01" required />
+              </label>
+
+              <label>
+                Wholesale Min Qty
+                <input id="product-wholesale-min-qty" type="number" min="1" step="0.01" required />
+              </label>
+
+              <label>
+                Stock Qty
+                <input id="product-stock" type="number" min="0" step="0.01" required />
+              </label>
+
+              <label>
+                Reorder Level
+                <input id="product-reorder-level" type="number" min="0" step="0.01" required />
+              </label>
+
+              <div class="actions-row">
+                <button type="submit" class="btn primary" id="product-save-btn">Save Product</button>
+                <button type="button" class="btn subtle" id="product-reset-btn">Clear</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="panel">
+            <header class="panel-head">
+              <h3>Product List</h3>
+            </header>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>SKU</th>
+                    <th>Barcode</th>
+                    <th>Stock</th>
+                    <th>Cost</th>
+                    <th>Retail</th>
+                    <th>Wholesale</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="products-body"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section class="view" id="view-customers">
+          <article class="panel">
+            <header class="panel-head">
+              <h3>Customer Master</h3>
+              <p>Add both retail and wholesale accounts.</p>
+            </header>
+
+            <form id="customer-form" class="form-grid">
+              <input type="hidden" id="customer-id" />
+
+              <label>
+                Customer Name
+                <input id="customer-name" required />
+              </label>
+
+              <label>
+                Customer Type
+                <select id="customer-type">
+                  <option value="retail">Retail</option>
+                  <option value="wholesale">Wholesale</option>
+                </select>
+              </label>
+
+              <label>
+                Phone
+                <input id="customer-phone" />
+              </label>
+
+              <label>
+                GSTIN (Optional)
+                <input id="customer-gstin" placeholder="Optional" />
+              </label>
+
+              <label class="full-width">
+                Address
+                <textarea id="customer-address" rows="2"></textarea>
+              </label>
+
+              <div class="actions-row">
+                <button type="submit" class="btn primary" id="customer-save-btn">Save Customer</button>
+                <button type="button" class="btn subtle" id="customer-reset-btn">Clear</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="panel">
+            <header class="panel-head">
+              <h3>Customer List</h3>
+            </header>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Phone</th>
+                    <th>GSTIN</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="customers-body"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section class="view" id="view-suppliers">
+          <div class="grid-two">
+            <article class="panel">
+              <header class="panel-head">
+                <h3>Supplier Master</h3>
+                <p>Manage vendors and opening details.</p>
+              </header>
+
+              <form id="supplier-form" class="form-grid">
+                <input type="hidden" id="supplier-id" />
+
+                <label>
+                  Supplier Name
+                  <input id="supplier-name" required />
+                </label>
+
+                <label>
+                  Phone
+                  <input id="supplier-phone" />
+                </label>
+
+                <label>
+                  GSTIN (Optional)
+                  <input id="supplier-gstin" placeholder="Optional" />
+                </label>
+
+                <label class="full-width">
+                  Address
+                  <textarea id="supplier-address" rows="2"></textarea>
+                </label>
+
+                <div class="actions-row">
+                  <button type="submit" class="btn primary" id="supplier-save-btn">Save Supplier</button>
+                  <button type="button" class="btn subtle" id="supplier-reset-btn">Clear</button>
+                </div>
+              </form>
+
+              <div class="table-wrap mt12">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Phone</th>
+                      <th>Outstanding</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="suppliers-body"></tbody>
+                </table>
+              </div>
+            </article>
+
+            <article class="panel">
+              <header class="panel-head split">
+                <h3>Supplier Ledger</h3>
+                <select id="ledger-supplier-select"></select>
+              </header>
+
+              <div class="row-inline">
+                <p class="ledger-outstanding">Outstanding: <strong id="supplier-outstanding">Rs 0.00</strong></p>
+              </div>
+
+              <div class="quick-row four-col">
+                <label>
+                  Payment Amount
+                  <input id="supplier-payment-amount" type="number" min="0.01" step="0.01" placeholder="0.00" />
+                </label>
+
+                <label class="wide">
+                  Notes
+                  <input id="supplier-payment-notes" placeholder="Optional payment note" />
+                </label>
+
+                <button type="button" class="btn primary" id="supplier-payment-btn">Record Payment</button>
+              </div>
+
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Type</th>
+                      <th>Reference</th>
+                      <th>Debit</th>
+                      <th>Credit</th>
+                      <th>Running Due</th>
+                      <th>Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody id="supplier-ledger-body"></tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" id="view-purchases">
+          <div class="grid-two billing-grid">
+            <article class="panel">
+              <header class="panel-head">
+                <h3>Create Purchase Entry</h3>
+                <p>Stock-in with supplier due tracking.</p>
+              </header>
+
+              <form id="purchase-form" class="form-grid">
+                <label>
+                  Supplier
+                  <select id="purchase-supplier"></select>
+                </label>
+
+                <label class="inline-check">
+                  <input type="checkbox" id="purchase-gst-enabled" />
+                  <span>Apply GST</span>
+                </label>
+
+                <label>
+                  GST % (Optional)
+                  <input id="purchase-gst-rate" type="number" min="0" step="0.01" value="0" disabled />
+                </label>
+
+                <label>
+                  Discount
+                  <input id="purchase-discount" type="number" min="0" step="0.01" value="0" />
+                </label>
+
+                <label>
+                  Paid Amount
+                  <input id="purchase-paid" type="number" min="0" step="0.01" value="0" />
+                </label>
+
+                <label class="full-width">
+                  Notes
+                  <textarea id="purchase-notes" rows="2" placeholder="Optional remarks"></textarea>
+                </label>
+              </form>
+            </article>
+
+            <article class="panel">
+              <header class="panel-head">
+                <h3>Add Purchase Items</h3>
+                <p>Use barcode scanner or manual selection.</p>
+              </header>
+
+              <div class="scan-box">
+                <label>
+                  Barcode Scan
+                  <input id="purchase-barcode-input" placeholder="Focus here and scan product barcode" />
+                </label>
+                <small>Press Enter after scan. SKU can also be scanned or typed.</small>
+              </div>
+
+              <div class="quick-row four-col purchase-add-row">
+                <label>
+                  Product
+                  <select id="purchase-draft-product-id"></select>
+                </label>
+
+                <label>
+                  Qty
+                  <input id="purchase-draft-qty" type="number" min="0.01" step="0.01" value="1" />
+                </label>
+
+                <label>
+                  Unit Cost
+                  <input id="purchase-draft-cost" type="number" min="0.01" step="0.01" value="0" />
+                </label>
+
+                <button type="button" class="btn primary" id="add-purchase-item-btn">Add</button>
+              </div>
+
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Item</th>
+                      <th>Qty</th>
+                      <th>Unit Cost</th>
+                      <th>Amount</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="purchase-draft-items-body"></tbody>
+                </table>
+              </div>
+
+              <div class="totals-box">
+                <p><span>Sub Total</span><strong id="purchase-subtotal-value">Rs 0.00</strong></p>
+                <p><span>Discount</span><strong id="purchase-discount-value">Rs 0.00</strong></p>
+                <p><span>GST</span><strong id="purchase-gst-value">Rs 0.00</strong></p>
+                <p class="net"><span>Net Total</span><strong id="purchase-total-value">Rs 0.00</strong></p>
+                <p><span>Balance</span><strong id="purchase-balance-value">Rs 0.00</strong></p>
+              </div>
+
+              <button type="button" class="btn success" id="purchase-submit-btn">Create Purchase</button>
+            </article>
+          </div>
+
+          <article class="panel mt16">
+            <header class="panel-head split">
+              <h3>Purchase History</h3>
+              <input id="purchase-search" placeholder="Search purchase/supplier" />
+            </header>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Purchase</th>
+                    <th>Date</th>
+                    <th>Supplier</th>
+                    <th>Total</th>
+                    <th>Paid</th>
+                    <th>Balance</th>
+                    <th>GST</th>
+                  </tr>
+                </thead>
+                <tbody id="purchases-body"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section class="view" id="view-expenses">
+          <div class="grid-two">
+            <article class="panel">
+              <header class="panel-head">
+                <h3>Record Expense</h3>
+                <p>Track electricity, rent, salary, travel and other operating costs.</p>
+              </header>
+
+              <form id="expense-form" class="form-grid">
+                <label>
+                  Category
+                  <select id="expense-category">
+                    <option value="Electricity">Electricity</option>
+                    <option value="Rent">Rent</option>
+                    <option value="Salary">Salary</option>
+                    <option value="Travel">Travel</option>
+                    <option value="Internet">Internet</option>
+                    <option value="Maintenance">Maintenance</option>
+                    <option value="Fuel">Fuel</option>
+                    <option value="Office Supplies">Office Supplies</option>
+                    <option value="Miscellaneous">Miscellaneous</option>
+                  </select>
+                </label>
+
+                <label>
+                  Amount
+                  <input id="expense-amount" type="number" min="0.01" step="0.01" required />
+                </label>
+
+                <label>
+                  Expense Date
+                  <input id="expense-date" type="date" />
+                </label>
+
+                <label>
+                  Paid To
+                  <input id="expense-paid-to" placeholder="Optional vendor/person name" />
+                </label>
+
+                <label class="full-width">
+                  Notes
+                  <textarea id="expense-notes" rows="2" placeholder="Optional notes"></textarea>
+                </label>
+
+                <div class="actions-row">
+                  <button type="submit" class="btn primary" id="expense-submit-btn">Record Expense</button>
+                </div>
+              </form>
+            </article>
+
+            <article class="panel">
+              <header class="panel-head split">
+                <h3>Expense History</h3>
+                <input id="expense-search" placeholder="Search by category, no, paid to" />
+              </header>
+
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Expense No</th>
+                      <th>Date</th>
+                      <th>Category</th>
+                      <th>Paid To</th>
+                      <th>Notes</th>
+                      <th>Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody id="expenses-body"></tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" id="view-billing">
+          <div class="grid-two billing-grid">
+            <article class="panel">
+              <header class="panel-head">
+                <h3>Create Sale</h3>
+                <p>Retail and wholesale billing in one flow.</p>
+              </header>
+
+              <form id="invoice-form" class="form-grid">
+                <label>
+                  Invoice Channel
+                  <select id="invoice-channel">
+                    <option value="retail">Retail</option>
+                    <option value="wholesale">Wholesale</option>
+                  </select>
+                </label>
+
+                <label>
+                  Customer
+                  <select id="invoice-customer"></select>
+                </label>
+
+                <label class="inline-check">
+                  <input type="checkbox" id="invoice-gst-enabled" />
+                  <span>Apply GST</span>
+                </label>
+
+                <label>
+                  GST % (Optional)
+                  <input id="invoice-gst-rate" type="number" min="0" step="0.01" value="0" disabled />
+                </label>
+
+                <label>
+                  Discount
+                  <input id="invoice-discount" type="number" min="0" step="0.01" value="0" />
+                </label>
+
+                <label>
+                  Paid Amount
+                  <input id="invoice-paid" type="number" min="0" step="0.01" value="0" />
+                </label>
+
+                <label class="full-width">
+                  Notes
+                  <textarea id="invoice-notes" rows="2" placeholder="Optional remarks"></textarea>
+                </label>
+              </form>
+            </article>
+
+            <article class="panel">
+              <header class="panel-head">
+                <h3>Add Items</h3>
+                <p>Use barcode scanner or manual selection.</p>
+              </header>
+
+              <div class="scan-box">
+                <label>
+                  Barcode Scan
+                  <input id="barcode-input" placeholder="Focus here and scan barcode" />
+                </label>
+                <small>Scanner should act as keyboard input and hit Enter automatically.</small>
+              </div>
+
+              <div class="quick-row">
+                <label>
+                  Product
+                  <select id="draft-product-id"></select>
+                </label>
+
+                <label>
+                  Qty
+                  <input id="draft-qty" type="number" min="0.01" step="0.01" value="1" />
+                </label>
+
+                <button type="button" class="btn primary" id="add-item-btn">Add </button>
+              </div>
+
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Item</th>
+                      <th>Qty</th>
+                      <th>Rate</th>
+                      <th>Amount</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="draft-items-body"></tbody>
+                </table>
+              </div>
+
+              <div class="totals-box">
+                <p><span>Sub Total</span><strong id="subtotal-value">Rs 0.00</strong></p>
+                <p><span>Discount</span><strong id="discount-value">Rs 0.00</strong></p>
+                <p><span>GST</span><strong id="gst-value">Rs 0.00</strong></p>
+                <p class="net"><span>Net Total</span><strong id="total-value">Rs 0.00</strong></p>
+                <p><span>Balance</span><strong id="balance-value">Rs 0.00</strong></p>
+              </div>
+
+              <button type="button" class="btn success" id="invoice-submit-btn">Create Invoice</button>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" id="view-invoices">
+          <article class="panel">
+            <header class="panel-head split">
+              <h3>All Invoices</h3>
+              <input id="invoice-search" placeholder="Search invoice/customer" />
+            </header>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Invoice</th>
+                    <th>Date</th>
+                    <th>Channel</th>
+                    <th>Customer</th>
+                    <th>Total</th>
+                    <th>Balance</th>
+                    <th>Payment</th>
+                    <th>GST</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="invoices-body"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section class="view" id="view-reports">
+          <article class="panel">
+            <header class="panel-head split">
+              <h3>Daily Profit & Loss</h3>
+              <div class="row-inline">
+                <input id="report-date" type="date" />
+                <button type="button" class="btn subtle" id="report-refresh-btn">Refresh</button>
+              </div>
+            </header>
+
+            <div class="card-grid" id="report-cards"></div>
+
+            <div class="table-wrap mt16">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Net Sales</th>
+                    <th>COGS</th>
+                    <th>Gross Profit</th>
+                    <th>Purchase Spend</th>
+                    <th>Expenses</th>
+                    <th>Cash In</th>
+                    <th>Cash Out</th>
+                    <th>Net Cashflow</th>
+                  </tr>
+                </thead>
+                <tbody id="pnl-history-body"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <div id="license-gate" class="license-gate">
+      <div class="license-card">
+        <h3>License Activation Required</h3>
+        <p id="license-message" class="license-msg"></p>
+        <p id="license-meta" class="license-meta"></p>
+
+        <label>
+          12-digit License Key
+          <input
+            id="license-key-input"
+            inputmode="numeric"
+            maxlength="12"
+            placeholder="Enter 12-digit key"
+          />
+        </label>
+
+        <button type="button" class="btn primary" id="license-activate-btn">Activate Key</button>
+        <small>Normal key: 30 days. Maximum 36 normal keys can be used.</small>
+      </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
