@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('erpApi', {
   getBootstrap: () => ipcRenderer.invoke('erp:get-bootstrap'),
   getLicenseStatus: () => ipcRenderer.invoke('erp:get-license-status'),
   activateLicenseKey: (payload) => ipcRenderer.invoke('erp:activate-license-key', payload),
+  upsertUiSettings: (payload) => ipcRenderer.invoke('erp:upsert-ui-settings', payload),
   upsertBusiness: (payload) => ipcRenderer.invoke('erp:upsert-business', payload),
 
   upsertProduct: (payload) => ipcRenderer.invoke('erp:upsert-product', payload),

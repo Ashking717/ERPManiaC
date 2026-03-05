@@ -11,6 +11,11 @@
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
+          <img
+            class="brand-logo"
+            src="../../assets/logo/erpmaniac-logo-256.png"
+            alt="ERPManiaC logo"
+          />
           <h1>ERPManiaC</h1>
           <p id="brand-shop-name">Grocery Offline ERP</p>
         </div>
@@ -50,7 +55,15 @@
 
         <div class="side-note">
           <p>Offline mode enabled</p>
-          
+          <label class="theme-picker">
+            Theme
+            <select id="theme-mode-select">
+              <option value="auto">Auto</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </label>
+          <p id="theme-mode-live">Current: Light</p>
         </div>
       </aside>
 
@@ -969,20 +982,26 @@
         <section class="view" id="view-reports">
           <article class="panel">
             <header class="panel-head split">
-              <h3>Daily Profit & Loss</h3>
+              <h3 id="report-title">Daily Profit & Loss</h3>
               <div class="row-inline">
+                <select id="report-period">
+                  <option value="daily">Daily</option>
+                  <option value="monthly">Monthly</option>
+                  <option value="yearly">Yearly</option>
+                </select>
                 <input id="report-date" type="date" />
                 <button type="button" class="btn subtle" id="report-refresh-btn">Refresh</button>
               </div>
             </header>
 
             <div class="card-grid" id="report-cards"></div>
+            <p class="muted" id="report-history-label">Last 7 days</p>
 
             <div class="table-wrap mt16">
               <table>
                 <thead>
                   <tr>
-                    <th>Date</th>
+                    <th>Period</th>
                     <th>Net Sales</th>
                     <th>COGS</th>
                     <th>Gross Profit</th>
@@ -1021,6 +1040,115 @@
         <small>Normal key: 30 days. Maximum 36 normal keys can be used.</small>
       </div>
     </div>
+
+    <dialog id="purchase-unknown-barcode-modal" class="quick-modal">
+      <form id="purchase-unknown-product-form" class="quick-modal-card form-grid three-col">
+        <header class="panel-head">
+          <h3>New Barcode Detected</h3>
+          <p>Product not found. Add it quickly and continue purchase entry.</p>
+        </header>
+
+        <label>
+          Scanned Barcode
+          <input id="purchase-unknown-barcode-value" readonly />
+        </label>
+
+        <label>
+          Product Name
+          <input id="purchase-unknown-product-name" placeholder="Item name" required />
+        </label>
+
+        <label>
+          Category
+          <select id="purchase-unknown-product-category">
+            <option value="General">General</option>
+            <option value="Essentials">Essentials</option>
+            <option value="Grains">Grains</option>
+            <option value="Pulses">Pulses</option>
+            <option value="Spices">Spices</option>
+            <option value="Cooking Oil">Cooking Oil</option>
+            <option value="Dairy">Dairy</option>
+            <option value="Beverages">Beverages</option>
+            <option value="Snacks">Snacks</option>
+            <option value="Bakery">Bakery</option>
+            <option value="Frozen">Frozen</option>
+            <option value="Fruits & Vegetables">Fruits & Vegetables</option>
+            <option value="Household">Household</option>
+            <option value="Personal Care">Personal Care</option>
+          </select>
+        </label>
+
+        <label>
+          Unit
+          <select id="purchase-unknown-product-unit">
+            <option value="Unit">Unit</option>
+            <option value="Piece">Piece</option>
+            <option value="Pack">Pack</option>
+            <option value="Packet">Packet</option>
+            <option value="Bag">Bag</option>
+            <option value="Bottle">Bottle</option>
+            <option value="Box">Box</option>
+            <option value="Pouch">Pouch</option>
+            <option value="Can">Can</option>
+            <option value="Jar">Jar</option>
+            <option value="Kg">Kg</option>
+            <option value="Gram">Gram</option>
+            <option value="Litre">Litre</option>
+            <option value="ml">ml</option>
+            <option value="Dozen">Dozen</option>
+            <option value="Carton">Carton</option>
+          </select>
+        </label>
+
+        <label>
+          Cost Price
+          <input id="purchase-unknown-product-cost-price" type="number" min="0.01" step="0.01" required />
+        </label>
+
+        <label>
+          Retail Price
+          <input id="purchase-unknown-product-retail-price" type="number" min="0.01" step="0.01" required />
+        </label>
+
+        <label>
+          Wholesale Price
+          <input
+            id="purchase-unknown-product-wholesale-price"
+            type="number"
+            min="0.01"
+            step="0.01"
+            required
+          />
+        </label>
+
+        <label>
+          Wholesale Min Qty (Optional)
+          <input
+            id="purchase-unknown-product-wholesale-min-qty"
+            type="number"
+            min="1"
+            step="0.01"
+            placeholder="Default 1"
+          />
+        </label>
+
+        <label>
+          Reorder Level (Optional)
+          <input
+            id="purchase-unknown-product-reorder-level"
+            type="number"
+            min="0"
+            step="0.01"
+            placeholder="Default 0"
+          />
+        </label>
+
+        <div class="actions-row">
+          <button type="button" class="btn subtle" id="purchase-unknown-cancel-btn">Cancel</button>
+          <button type="submit" class="btn primary" id="purchase-unknown-save-btn">Save & Add Item</button>
+        </div>
+      </form>
+    </dialog>
 
     <div id="toast" class="toast"></div>
 

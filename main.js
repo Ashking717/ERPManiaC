@@ -6,6 +6,7 @@ const { renderInvoiceHtml } = require('./src/main/invoiceTemplate');
 let mainWindow;
 let erpService;
 const previewWindows = new Set();
+const APP_ICON_PATH = path.join(__dirname, 'assets', 'logo', 'erpmaniac-logo-256.png');
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
@@ -13,7 +14,9 @@ function createMainWindow() {
     height: 900,
     minWidth: 1160,
     minHeight: 760,
+    show: false,
     backgroundColor: '#eef3ea',
+    icon: APP_ICON_PATH,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -23,6 +26,14 @@ function createMainWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'src/renderer/index.html'));
+  mainWindow.once('ready-to-show', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+
+    mainWindow.maximize();
+    mainWindow.show();
+  });
 }
 
 function withResponse(handler) {
@@ -90,6 +101,7 @@ async function previewInvoice(invoiceId) {
     height: 780,
     autoHideMenuBar: true,
     title: 'Invoice Preview',
+    icon: APP_ICON_PATH,
     webPreferences: {
       sandbox: true
     }
@@ -110,6 +122,10 @@ function registerIpc() {
   ipcMain.handle(
     'erp:activate-license-key',
     withResponse((payload) => erpService.activateLicenseKey(payload))
+  );
+  ipcMain.handle(
+    'erp:upsert-ui-settings',
+    withResponse((payload) => erpService.upsertUiSettings(payload))
   );
   ipcMain.handle('erp:upsert-business', withResponse((payload) => erpService.upsertBusiness(payload)));
 
@@ -147,6 +163,10 @@ function registerIpc() {
 }
 
 app.whenReady().then(() => {
+  if (process.platform === 'darwin' && app.dock) {
+    app.dock.setIcon(APP_ICON_PATH);
+  }
+
   erpService = createErpService();
   registerIpc();
   createMainWindow();

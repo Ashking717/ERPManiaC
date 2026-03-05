@@ -12,14 +12,17 @@ const state = {
   purchaseDraftItems: [],
   supplierLedger: null,
   pnlReport: null,
+  reportPeriod: 'daily',
   licenseStatus: null,
+  uiSettings: null,
   invoicePaidTouched: false,
   currentView: 'dashboard',
   invoiceSearch: '',
   purchaseSearch: '',
   billingProductSearch: '',
   expenseSearch: '',
-  selectedLedgerSupplierId: ''
+  selectedLedgerSupplierId: '',
+  pendingPurchaseBarcode: ''
 };
 
 const dom = {};
@@ -27,6 +30,7 @@ let toastTimer = null;
 const BARCODE_SCAN_IDLE_MS = 120;
 let billingBarcodeTimer = null;
 let purchaseBarcodeTimer = null;
+let themeAutoTimer = null;
 
 function getApi() {
   if (!window.erpApi) {
@@ -125,9 +129,7 @@ function processPurchaseBarcodeScan() {
 
   const product = findProductByBarcodeOrSku(barcode);
   if (!product) {
-    showToast(`No product found for barcode ${barcode}`, 'error');
-    dom.purchaseBarcodeInput.value = '';
-    dom.purchaseBarcodeInput.focus();
+    openPurchaseUnknownBarcodeModal(barcode);
     return;
   }
 
@@ -202,6 +204,39 @@ function invoicePrefixPreview(storeName) {
   return 'GS';
 }
 
+function normalizeReportPeriod(value) {
+  const period = String(value || '').trim().toLowerCase();
+  if (period === 'daily' || period === 'monthly' || period === 'yearly') {
+    return period;
+  }
+
+  return 'daily';
+}
+
+function reportTitleByPeriod(period) {
+  if (period === 'monthly') {
+    return 'Monthly Profit & Loss';
+  }
+
+  if (period === 'yearly') {
+    return 'Yearly Profit & Loss';
+  }
+
+  return 'Daily Profit & Loss';
+}
+
+function reportHistoryLabelByPeriod(period) {
+  if (period === 'monthly') {
+    return 'Last 12 months';
+  }
+
+  if (period === 'yearly') {
+    return 'Last 5 years';
+  }
+
+  return 'Last 7 days';
+}
+
 function getInvoicePaymentStatus(invoice) {
   const explicit = String(invoice && invoice.paymentStatus ? invoice.paymentStatus : '').toLowerCase();
   if (explicit === 'paid' || explicit === 'partial' || explicit === 'unpaid') {
@@ -225,6 +260,75 @@ function getInvoicePaymentStatus(invoice) {
 
 function setStatus(text) {
   dom.statusPill.textContent = text;
+}
+
+function normalizeThemeMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  if (mode === 'light' || mode === 'dark' || mode === 'auto') {
+    return mode;
+  }
+
+  return 'auto';
+}
+
+function resolveThemeByMode(mode) {
+  if (mode === 'light' || mode === 'dark') {
+    return mode;
+  }
+
+  const hour = new Date().getHours();
+  return hour >= 6 && hour < 18 ? 'light' : 'dark';
+}
+
+function clearThemeAutoTimer() {
+  if (!themeAutoTimer) {
+    return;
+  }
+
+  clearInterval(themeAutoTimer);
+  themeAutoTimer = null;
+}
+
+function setThemeLiveLabel(mode, appliedTheme) {
+  if (!dom.themeModeLive) {
+    return;
+  }
+
+  const appliedLabel = appliedTheme === 'dark' ? 'Dark' : 'Light';
+  dom.themeModeLive.textContent =
+    mode === 'auto' ? `Current: ${appliedLabel} (Auto)` : `Current: ${appliedLabel}`;
+}
+
+function applyThemeMode(modeInput) {
+  const mode = normalizeThemeMode(modeInput);
+  const appliedTheme = resolveThemeByMode(mode);
+
+  document.documentElement.dataset.theme = appliedTheme;
+
+  if (dom.themeModeSelect && dom.themeModeSelect.value !== mode) {
+    dom.themeModeSelect.value = mode;
+  }
+
+  setThemeLiveLabel(mode, appliedTheme);
+  clearThemeAutoTimer();
+
+  if (mode !== 'auto') {
+    return;
+  }
+
+  themeAutoTimer = setInterval(() => {
+    const currentMode = normalizeThemeMode(state.uiSettings && state.uiSettings.themeMode);
+    if (currentMode !== 'auto') {
+      clearThemeAutoTimer();
+      return;
+    }
+
+    const nextTheme = resolveThemeByMode('auto');
+    if (document.documentElement.dataset.theme !== nextTheme) {
+      document.documentElement.dataset.theme = nextTheme;
+    }
+    setThemeLiveLabel('auto', nextTheme);
+  }, 60 * 1000);
 }
 
 function showToast(message, type = '') {
@@ -287,6 +391,8 @@ function cacheDom() {
   dom.statusPill = document.getElementById('status-pill');
   dom.toast = document.getElementById('toast');
   dom.brandShopName = document.getElementById('brand-shop-name');
+  dom.themeModeSelect = document.getElementById('theme-mode-select');
+  dom.themeModeLive = document.getElementById('theme-mode-live');
   dom.licenseGate = document.getElementById('license-gate');
   dom.licenseMessage = document.getElementById('license-message');
   dom.licenseMeta = document.getElementById('license-meta');
@@ -370,6 +476,25 @@ function cacheDom() {
   dom.purchaseProductWholesaleMinQty = document.getElementById('purchase-product-wholesale-min-qty');
   dom.purchaseProductReorderLevel = document.getElementById('purchase-product-reorder-level');
   dom.purchaseProductSaveBtn = document.getElementById('purchase-product-save-btn');
+  dom.purchaseUnknownBarcodeModal = document.getElementById('purchase-unknown-barcode-modal');
+  dom.purchaseUnknownProductForm = document.getElementById('purchase-unknown-product-form');
+  dom.purchaseUnknownBarcodeValue = document.getElementById('purchase-unknown-barcode-value');
+  dom.purchaseUnknownProductName = document.getElementById('purchase-unknown-product-name');
+  dom.purchaseUnknownProductCategory = document.getElementById('purchase-unknown-product-category');
+  dom.purchaseUnknownProductUnit = document.getElementById('purchase-unknown-product-unit');
+  dom.purchaseUnknownProductCostPrice = document.getElementById('purchase-unknown-product-cost-price');
+  dom.purchaseUnknownProductRetailPrice = document.getElementById('purchase-unknown-product-retail-price');
+  dom.purchaseUnknownProductWholesalePrice = document.getElementById(
+    'purchase-unknown-product-wholesale-price'
+  );
+  dom.purchaseUnknownProductWholesaleMinQty = document.getElementById(
+    'purchase-unknown-product-wholesale-min-qty'
+  );
+  dom.purchaseUnknownProductReorderLevel = document.getElementById(
+    'purchase-unknown-product-reorder-level'
+  );
+  dom.purchaseUnknownCancelBtn = document.getElementById('purchase-unknown-cancel-btn');
+  dom.purchaseUnknownSaveBtn = document.getElementById('purchase-unknown-save-btn');
 
   dom.expenseForm = document.getElementById('expense-form');
   dom.expenseCategory = document.getElementById('expense-category');
@@ -414,9 +539,12 @@ function cacheDom() {
   dom.invoiceSearch = document.getElementById('invoice-search');
   dom.invoicesBody = document.getElementById('invoices-body');
 
+  dom.reportTitle = document.getElementById('report-title');
+  dom.reportPeriod = document.getElementById('report-period');
   dom.reportDate = document.getElementById('report-date');
   dom.reportRefreshBtn = document.getElementById('report-refresh-btn');
   dom.reportCards = document.getElementById('report-cards');
+  dom.reportHistoryLabel = document.getElementById('report-history-label');
   dom.pnlHistoryBody = document.getElementById('pnl-history-body');
 }
 
@@ -464,6 +592,40 @@ function bindSidebarShortcuts() {
 
     event.preventDefault();
     switchView(targetView);
+  });
+}
+
+function bindThemeMode() {
+  if (!dom.themeModeSelect) {
+    return;
+  }
+
+  dom.themeModeSelect.addEventListener('change', async () => {
+    const previousMode = normalizeThemeMode(state.uiSettings && state.uiSettings.themeMode);
+    const nextMode = normalizeThemeMode(dom.themeModeSelect.value);
+    const previousStatus = dom.statusPill.textContent;
+
+    state.uiSettings = {
+      ...(state.uiSettings || {}),
+      themeMode: nextMode
+    };
+    applyThemeMode(nextMode);
+
+    try {
+      setStatus('Saving theme...');
+      const updated = await invoke('upsertUiSettings', { themeMode: nextMode });
+      state.uiSettings = updated || { themeMode: nextMode };
+      applyThemeMode(state.uiSettings.themeMode);
+      setStatus(previousStatus);
+    } catch (error) {
+      state.uiSettings = {
+        ...(state.uiSettings || {}),
+        themeMode: previousMode
+      };
+      applyThemeMode(previousMode);
+      setStatus(previousStatus);
+      showToast(error.message, 'error');
+    }
   });
 }
 
@@ -985,26 +1147,19 @@ function bindPurchases() {
   dom.purchaseProductForm.addEventListener('submit', async (event) => {
     event.preventDefault();
 
-    const payload = {
-      name: dom.purchaseProductName.value,
-      barcode: dom.purchaseProductBarcode.value,
-      category: dom.purchaseProductCategory.value,
-      unit: dom.purchaseProductUnit.value,
-      costPrice: dom.purchaseProductCostPrice.value,
-      retailPrice: dom.purchaseProductRetailPrice.value,
-      wholesalePrice: dom.purchaseProductWholesalePrice.value,
-      wholesaleMinQty: dom.purchaseProductWholesaleMinQty.value,
-      stock: 0,
-      reorderLevel: dom.purchaseProductReorderLevel.value
-    };
-
     try {
       setStatus('Saving new product...');
-      const product = await invoke('upsertProduct', payload);
-      await reloadData();
-
-      dom.purchaseDraftProductId.value = product.id;
-      dom.purchaseDraftCost.value = round2(toNumber(product.costPrice, product.wholesalePrice));
+      const product = await createQuickPurchaseProduct({
+        name: dom.purchaseProductName.value,
+        barcode: dom.purchaseProductBarcode.value,
+        category: dom.purchaseProductCategory.value,
+        unit: dom.purchaseProductUnit.value,
+        costPrice: dom.purchaseProductCostPrice.value,
+        retailPrice: dom.purchaseProductRetailPrice.value,
+        wholesalePrice: dom.purchaseProductWholesalePrice.value,
+        wholesaleMinQty: dom.purchaseProductWholesaleMinQty.value,
+        reorderLevel: dom.purchaseProductReorderLevel.value
+      });
       resetPurchaseProductForm();
 
       showToast(`Product ${product.name} added with stock 0`);
@@ -1015,6 +1170,61 @@ function bindPurchases() {
       showToast(error.message, 'error');
     }
   });
+
+  if (dom.purchaseUnknownCancelBtn) {
+    dom.purchaseUnknownCancelBtn.addEventListener('click', () => {
+      closePurchaseUnknownBarcodeModal();
+    });
+  }
+
+  if (dom.purchaseUnknownBarcodeModal) {
+    dom.purchaseUnknownBarcodeModal.addEventListener('close', () => {
+      state.pendingPurchaseBarcode = '';
+      dom.purchaseBarcodeInput.value = '';
+      dom.purchaseBarcodeInput.focus();
+    });
+  }
+
+  if (dom.purchaseUnknownProductForm) {
+    dom.purchaseUnknownProductForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+
+      const barcode = dom.purchaseUnknownBarcodeValue.value.trim();
+      if (!barcode) {
+        showToast('Barcode is required', 'error');
+        dom.purchaseUnknownProductName.focus();
+        return;
+      }
+
+      try {
+        setStatus('Saving new product...');
+        const product = await createQuickPurchaseProduct(
+          {
+            name: dom.purchaseUnknownProductName.value,
+            barcode,
+            category: dom.purchaseUnknownProductCategory.value,
+            unit: dom.purchaseUnknownProductUnit.value,
+            costPrice: dom.purchaseUnknownProductCostPrice.value,
+            retailPrice: dom.purchaseUnknownProductRetailPrice.value,
+            wholesalePrice: dom.purchaseUnknownProductWholesalePrice.value,
+            wholesaleMinQty: dom.purchaseUnknownProductWholesaleMinQty.value,
+            reorderLevel: dom.purchaseUnknownProductReorderLevel.value
+          },
+          {
+            autoAddToDraft: true,
+            qty: 1
+          }
+        );
+
+        closePurchaseUnknownBarcodeModal();
+        showToast(`Product ${product.name} added and included in purchase`);
+        setStatus('Ready');
+      } catch (error) {
+        setStatus('Ready');
+        showToast(error.message, 'error');
+      }
+    });
+  }
 }
 
 function bindExpenses() {
@@ -1359,11 +1569,16 @@ function bindInvoices() {
 
 function bindReports() {
   dom.reportRefreshBtn.addEventListener('click', async () => {
-    await loadDailyPnl(dom.reportDate.value);
+    await loadPnlReport(dom.reportDate.value, dom.reportPeriod.value);
   });
 
   dom.reportDate.addEventListener('change', async () => {
-    await loadDailyPnl(dom.reportDate.value);
+    await loadPnlReport(dom.reportDate.value, dom.reportPeriod.value);
+  });
+
+  dom.reportPeriod.addEventListener('change', async () => {
+    state.reportPeriod = normalizeReportPeriod(dom.reportPeriod.value);
+    await loadPnlReport(dom.reportDate.value, state.reportPeriod);
   });
 }
 
@@ -1417,6 +1632,93 @@ function resetPurchaseProductForm() {
   setSelectValueWithFallback(dom.purchaseProductUnit, 'Unit');
   dom.purchaseProductWholesaleMinQty.value = '';
   dom.purchaseProductReorderLevel.value = '';
+}
+
+function resetPurchaseUnknownProductForm() {
+  if (!dom.purchaseUnknownProductForm) {
+    return;
+  }
+
+  dom.purchaseUnknownProductForm.reset();
+  setSelectValueWithFallback(dom.purchaseUnknownProductCategory, 'General');
+  setSelectValueWithFallback(dom.purchaseUnknownProductUnit, 'Unit');
+  dom.purchaseUnknownProductWholesaleMinQty.value = '';
+  dom.purchaseUnknownProductReorderLevel.value = '';
+}
+
+function getPurchaseProductPayload(input) {
+  return {
+    name: input.name,
+    barcode: input.barcode,
+    category: input.category,
+    unit: input.unit,
+    costPrice: input.costPrice,
+    retailPrice: input.retailPrice,
+    wholesalePrice: input.wholesalePrice,
+    wholesaleMinQty: input.wholesaleMinQty,
+    stock: 0,
+    reorderLevel: input.reorderLevel
+  };
+}
+
+async function createQuickPurchaseProduct(input, options = {}) {
+  const payload = getPurchaseProductPayload(input);
+  const product = await invoke('upsertProduct', payload);
+  await reloadData();
+
+  if (state.products.some((entry) => entry.id === product.id)) {
+    dom.purchaseDraftProductId.value = product.id;
+  }
+
+  const unitCost = round2(toNumber(product.costPrice, product.wholesalePrice));
+  dom.purchaseDraftCost.value = unitCost;
+
+  if (options.autoAddToDraft) {
+    const qty = round2(toNumber(options.qty, 1));
+    const added = addPurchaseDraftItem(product.id, qty, unitCost);
+    if (added) {
+      dom.purchaseDraftQty.value = '1';
+    }
+  }
+
+  return product;
+}
+
+function closePurchaseUnknownBarcodeModal() {
+  const modal = dom.purchaseUnknownBarcodeModal;
+  if (!modal || !modal.open) {
+    return;
+  }
+
+  if (typeof modal.close === 'function') {
+    modal.close();
+  } else {
+    modal.removeAttribute('open');
+  }
+}
+
+function openPurchaseUnknownBarcodeModal(barcode) {
+  const modal = dom.purchaseUnknownBarcodeModal;
+  if (!modal) {
+    showToast(`No product found for barcode ${barcode}`, 'error');
+    dom.purchaseBarcodeInput.value = '';
+    dom.purchaseBarcodeInput.focus();
+    return;
+  }
+
+  state.pendingPurchaseBarcode = String(barcode || '').trim();
+  resetPurchaseUnknownProductForm();
+  dom.purchaseUnknownBarcodeValue.value = state.pendingPurchaseBarcode;
+
+  if (typeof modal.showModal === 'function') {
+    if (!modal.open) {
+      modal.showModal();
+    }
+  } else {
+    modal.setAttribute('open', 'open');
+  }
+
+  dom.purchaseUnknownProductName.focus();
 }
 
 function resetPurchaseSupplierForm() {
@@ -1497,6 +1799,16 @@ function renderBusiness() {
   dom.businessAddress.value = business.address || '';
   dom.businessInvoicePrefix.value = invoicePrefixPreview(business.name || '');
   dom.brandShopName.textContent = business.name || 'Grocery Offline ERP';
+}
+
+function renderUiSettings() {
+  const uiSettings = state.uiSettings || { themeMode: 'auto' };
+  const themeMode = normalizeThemeMode(uiSettings.themeMode);
+  state.uiSettings = {
+    ...uiSettings,
+    themeMode
+  };
+  applyThemeMode(themeMode);
 }
 
 function renderDashboard() {
@@ -1914,11 +2226,13 @@ function addPurchaseDraftItem(productId, qty, unitCost) {
     return false;
   }
 
-  const existing = state.purchaseDraftItems.find((item) => item.productId === productId);
+  const existing = state.purchaseDraftItems.find(
+    (item) =>
+      item.productId === productId &&
+      Math.abs(round2(toNumber(item.unitCost, 0)) - cleanCost) < 0.0001
+  );
   if (existing) {
-    const totalQty = round2(existing.qty + cleanQty);
-    existing.unitCost = round2((existing.qty * existing.unitCost + cleanQty * cleanCost) / totalQty);
-    existing.qty = totalQty;
+    existing.qty = round2(existing.qty + cleanQty);
   } else {
     state.purchaseDraftItems.push({ productId, qty: cleanQty, unitCost: cleanCost });
   }
@@ -2302,14 +2616,27 @@ function renderInvoices() {
     .join('');
 }
 
-async function loadDailyPnl(inputDate, silent = false) {
+async function loadPnlReport(inputDate, inputPeriod, silent = false) {
   try {
-    const dateKey = inputDate || todayKey();
-    const report = await invoke('getDailyProfitLoss', dateKey);
+    const dateKey = inputDate || dom.reportDate.value || todayKey();
+    const period = normalizeReportPeriod(inputPeriod || state.reportPeriod || dom.reportPeriod.value);
+    const report = await invoke('getDailyProfitLoss', {
+      inputDate: dateKey,
+      period
+    });
+
     state.pnlReport = report;
-    if (dom.reportDate.value !== report.date) {
-      dom.reportDate.value = report.date;
+    state.reportPeriod = normalizeReportPeriod(report.period || period);
+
+    if (dom.reportPeriod.value !== state.reportPeriod) {
+      dom.reportPeriod.value = state.reportPeriod;
     }
+
+    const normalizedDate = report.inputDate || report.date || dateKey;
+    if (dom.reportDate.value !== normalizedDate) {
+      dom.reportDate.value = normalizedDate;
+    }
+
     renderReports();
   } catch (error) {
     if (!silent) {
@@ -2320,6 +2647,7 @@ async function loadDailyPnl(inputDate, silent = false) {
 
 function renderReports() {
   const report = state.pnlReport || {
+    period: state.reportPeriod || 'daily',
     metrics: {
       invoiceCount: 0,
       purchaseCount: 0,
@@ -2333,10 +2661,20 @@ function renderReports() {
       cashOut: 0,
       netCashflow: 0
     },
-    recentDays: []
+    history: []
   };
-
+  const period = normalizeReportPeriod(report.period || state.reportPeriod);
+  const history = Array.isArray(report.history)
+    ? report.history
+    : Array.isArray(report.recentDays)
+      ? report.recentDays.map((row) => ({
+          ...row,
+          label: row.label || row.date || '-'
+        }))
+      : [];
   const metrics = report.metrics || {};
+  dom.reportTitle.textContent = reportTitleByPeriod(period);
+  dom.reportHistoryLabel.textContent = reportHistoryLabelByPeriod(period);
 
   dom.reportCards.innerHTML = `
     <article class="metric-card">
@@ -2377,16 +2715,16 @@ function renderReports() {
     </article>
   `;
 
-  if (!report.recentDays || !report.recentDays.length) {
+  if (!history.length) {
     dom.pnlHistoryBody.innerHTML = '<tr><td colspan="9" class="empty">No report data</td></tr>';
     return;
   }
 
-  dom.pnlHistoryBody.innerHTML = report.recentDays
+  dom.pnlHistoryBody.innerHTML = history
     .map(
       (row) => `
         <tr>
-          <td>${row.date}</td>
+          <td>${row.label || row.date || '-'}</td>
           <td>${formatMoney(row.netSales)}</td>
           <td>${formatMoney(row.cogs)}</td>
           <td>${formatMoney(row.grossProfit)}</td>
@@ -2402,6 +2740,7 @@ function renderReports() {
 }
 
 function renderAll() {
+  renderUiSettings();
   renderDashboard();
   renderBusiness();
   renderProducts();
@@ -2432,6 +2771,7 @@ async function reloadData() {
   state.dashboard = bootstrap.dashboard || null;
   state.business = bootstrap.business || null;
   state.licenseStatus = bootstrap.licenseStatus || null;
+  state.uiSettings = bootstrap.uiSettings || { themeMode: 'auto' };
 
   if (
     state.selectedLedgerSupplierId &&
@@ -2442,14 +2782,17 @@ async function reloadData() {
 
   renderAll();
   await loadSupplierLedger(true);
-  await loadDailyPnl(dom.reportDate.value || todayKey(), true);
+  await loadPnlReport(dom.reportDate.value || todayKey(), state.reportPeriod, true);
 }
 
 async function initializeApp() {
   cacheDom();
+  state.uiSettings = { themeMode: 'auto' };
+  applyThemeMode(state.uiSettings.themeMode);
   bindLicense();
   bindNavigation();
   bindSidebarShortcuts();
+  bindThemeMode();
   bindBusiness();
   bindProducts();
   bindCustomers();
@@ -2462,6 +2805,8 @@ async function initializeApp() {
 
   dom.invoiceGstRate.disabled = !dom.invoiceGstEnabled.checked;
   dom.purchaseGstRate.disabled = !dom.purchaseGstEnabled.checked;
+  state.reportPeriod = 'daily';
+  dom.reportPeriod.value = state.reportPeriod;
   dom.reportDate.value = todayKey();
   dom.expenseDate.value = todayKey();
   state.billingProductSearch = '';

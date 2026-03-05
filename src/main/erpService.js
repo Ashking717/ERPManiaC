@@ -42,6 +42,15 @@ function normalizeChannel(channel) {
   return channel === 'wholesale' ? 'wholesale' : 'retail';
 }
 
+function normalizeThemeMode(value) {
+  const mode = toText(value).toLowerCase();
+  if (mode === 'light' || mode === 'dark' || mode === 'auto') {
+    return mode;
+  }
+
+  return 'auto';
+}
+
 function invoicePrefixFromStoreName(storeName) {
   const letters = toText(storeName).toUpperCase().replace(/[^A-Z]/g, '');
   if (letters.length >= 2) {
@@ -131,6 +140,63 @@ function toDayKey(inputDate) {
   const month = String(dt.getMonth() + 1).padStart(2, '0');
   const day = String(dt.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+function toMonthKey(inputDate) {
+  const dt = new Date(inputDate);
+  const year = dt.getFullYear();
+  const month = String(dt.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+}
+
+function toYearKey(inputDate) {
+  return String(new Date(inputDate).getFullYear());
+}
+
+function monthRange(inputDate) {
+  const start = monthStart(inputDate || new Date());
+  const end = new Date(start);
+  end.setMonth(start.getMonth() + 1);
+
+  return { start, end };
+}
+
+function yearRange(inputDate) {
+  const dt = new Date(inputDate || new Date());
+  const start = new Date(dt.getFullYear(), 0, 1, 0, 0, 0, 0);
+  const end = new Date(dt.getFullYear() + 1, 0, 1, 0, 0, 0, 0);
+
+  return { start, end };
+}
+
+function normalizeReportPeriod(value) {
+  const period = toText(value).toLowerCase();
+  if (period === 'daily' || period === 'monthly' || period === 'yearly') {
+    return period;
+  }
+
+  return 'daily';
+}
+
+function resolveReportFocusDate(inputDate) {
+  const parsedLocal = parseLocalDateInput(inputDate);
+  if (parsedLocal) {
+    return parsedLocal;
+  }
+
+  const fallback = toText(inputDate) ? new Date(inputDate) : new Date();
+  if (!Number.isNaN(fallback.getTime())) {
+    return fallback;
+  }
+
+  return new Date();
+}
+
+function formatMonthLabel(inputDate) {
+  return new Date(inputDate).toLocaleString('en-IN', {
+    month: 'short',
+    year: 'numeric'
+  });
 }
 
 function isWithinRange(value, start, end) {
@@ -346,37 +412,34 @@ function deriveInvoicePaymentStatus(total, paidAmount, balance) {
   return 'unpaid';
 }
 
-function calculateDailyMetrics(data, inputDate) {
-  const { start, end } = dayRange(inputDate);
-  const dayKey = toDayKey(start);
-
+function calculateMetricsForRange(data, start, end) {
   const productById = new Map(data.products.map((product) => [product.id, product]));
 
-  const dailyInvoices = data.invoices.filter((invoice) => isWithinRange(invoice.createdAt, start, end));
-  const dailyPurchases = data.purchases.filter((purchase) => isWithinRange(purchase.createdAt, start, end));
-  const dailySupplierPayments = data.supplierPayments.filter((payment) =>
+  const scopedInvoices = data.invoices.filter((invoice) => isWithinRange(invoice.createdAt, start, end));
+  const scopedPurchases = data.purchases.filter((purchase) => isWithinRange(purchase.createdAt, start, end));
+  const scopedSupplierPayments = data.supplierPayments.filter((payment) =>
     isWithinRange(payment.createdAt, start, end)
   );
-  const dailyExpenses = (Array.isArray(data.expenses) ? data.expenses : []).filter((expense) =>
+  const scopedExpenses = (Array.isArray(data.expenses) ? data.expenses : []).filter((expense) =>
     isWithinRange(expense.createdAt, start, end)
   );
 
-  const salesGross = round2(dailyInvoices.reduce((sum, invoice) => sum + toNumber(invoice.subtotal, 0), 0));
+  const salesGross = round2(scopedInvoices.reduce((sum, invoice) => sum + toNumber(invoice.subtotal, 0), 0));
   const salesDiscount = round2(
-    dailyInvoices.reduce((sum, invoice) => sum + toNumber(invoice.discount, 0), 0)
+    scopedInvoices.reduce((sum, invoice) => sum + toNumber(invoice.discount, 0), 0)
   );
   const netSales = round2(
-    dailyInvoices.reduce((sum, invoice) => sum + toNumber(invoice.taxableValue, 0), 0)
+    scopedInvoices.reduce((sum, invoice) => sum + toNumber(invoice.taxableValue, 0), 0)
   );
   const gstCollected = round2(
-    dailyInvoices.reduce((sum, invoice) => sum + toNumber(invoice.gstAmount, 0), 0)
+    scopedInvoices.reduce((sum, invoice) => sum + toNumber(invoice.gstAmount, 0), 0)
   );
   const salesTotalWithGst = round2(
-    dailyInvoices.reduce((sum, invoice) => sum + toNumber(invoice.total, 0), 0)
+    scopedInvoices.reduce((sum, invoice) => sum + toNumber(invoice.total, 0), 0)
   );
 
   let cogs = 0;
-  for (const invoice of dailyInvoices) {
+  for (const invoice of scopedInvoices) {
     const items = Array.isArray(invoice.items) ? invoice.items : [];
     for (const item of items) {
       const qty = toNumber(item.qty, 0);
@@ -390,42 +453,41 @@ function calculateDailyMetrics(data, inputDate) {
   const grossProfit = round2(netSales - cogs);
 
   const purchaseSubtotal = round2(
-    dailyPurchases.reduce((sum, purchase) => sum + toNumber(purchase.subtotal, 0), 0)
+    scopedPurchases.reduce((sum, purchase) => sum + toNumber(purchase.subtotal, 0), 0)
   );
   const purchaseDiscount = round2(
-    dailyPurchases.reduce((sum, purchase) => sum + toNumber(purchase.discount, 0), 0)
+    scopedPurchases.reduce((sum, purchase) => sum + toNumber(purchase.discount, 0), 0)
   );
   const purchaseNet = round2(
-    dailyPurchases.reduce((sum, purchase) => sum + toNumber(purchase.taxableValue, 0), 0)
+    scopedPurchases.reduce((sum, purchase) => sum + toNumber(purchase.taxableValue, 0), 0)
   );
   const purchaseGst = round2(
-    dailyPurchases.reduce((sum, purchase) => sum + toNumber(purchase.gstAmount, 0), 0)
+    scopedPurchases.reduce((sum, purchase) => sum + toNumber(purchase.gstAmount, 0), 0)
   );
   const purchaseTotal = round2(
-    dailyPurchases.reduce((sum, purchase) => sum + toNumber(purchase.total, 0), 0)
+    scopedPurchases.reduce((sum, purchase) => sum + toNumber(purchase.total, 0), 0)
   );
 
   const cashIn = round2(
-    dailyInvoices.reduce((sum, invoice) => sum + toNumber(invoice.paidAmount, 0), 0)
+    scopedInvoices.reduce((sum, invoice) => sum + toNumber(invoice.paidAmount, 0), 0)
   );
   const purchasePaymentsAtEntry = round2(
-    dailyPurchases.reduce((sum, purchase) => sum + toNumber(purchase.paidAmount, 0), 0)
+    scopedPurchases.reduce((sum, purchase) => sum + toNumber(purchase.paidAmount, 0), 0)
   );
   const supplierPayments = round2(
-    dailySupplierPayments.reduce((sum, payment) => sum + toNumber(payment.amount, 0), 0)
+    scopedSupplierPayments.reduce((sum, payment) => sum + toNumber(payment.amount, 0), 0)
   );
   const expenseTotal = round2(
-    dailyExpenses.reduce((sum, expense) => sum + toNumber(expense.amount, 0), 0)
+    scopedExpenses.reduce((sum, expense) => sum + toNumber(expense.amount, 0), 0)
   );
   const cashOut = round2(purchasePaymentsAtEntry + supplierPayments + expenseTotal);
   const netCashflow = round2(cashIn - cashOut);
 
   return {
-    date: dayKey,
-    invoiceCount: dailyInvoices.length,
-    purchaseCount: dailyPurchases.length,
-    supplierPaymentCount: dailySupplierPayments.length,
-    expenseCount: dailyExpenses.length,
+    invoiceCount: scopedInvoices.length,
+    purchaseCount: scopedPurchases.length,
+    supplierPaymentCount: scopedSupplierPayments.length,
+    expenseCount: scopedExpenses.length,
     salesGross,
     salesDiscount,
     netSales,
@@ -445,6 +507,63 @@ function calculateDailyMetrics(data, inputDate) {
     expenseTotal,
     netCashflow
   };
+}
+
+function calculateDailyMetrics(data, inputDate) {
+  const { start, end } = dayRange(inputDate);
+  return {
+    date: toDayKey(start),
+    ...calculateMetricsForRange(data, start, end)
+  };
+}
+
+function toReportHistoryRow(label, metrics) {
+  return {
+    label,
+    netSales: metrics.netSales,
+    cogs: metrics.cogs,
+    grossProfit: metrics.grossProfit,
+    purchaseTotal: metrics.purchaseTotal,
+    expenseTotal: metrics.expenseTotal,
+    cashIn: metrics.cashIn,
+    cashOut: metrics.cashOut,
+    netCashflow: metrics.netCashflow
+  };
+}
+
+function buildReportHistory(data, period, focusDate) {
+  const history = [];
+
+  if (period === 'monthly') {
+    for (let i = 11; i >= 0; i -= 1) {
+      const monthDt = new Date(focusDate.getFullYear(), focusDate.getMonth() - i, 1, 12, 0, 0, 0);
+      const { start, end } = monthRange(monthDt);
+      const metrics = calculateMetricsForRange(data, start, end);
+      history.push(toReportHistoryRow(formatMonthLabel(start), metrics));
+    }
+
+    return history;
+  }
+
+  if (period === 'yearly') {
+    for (let i = 4; i >= 0; i -= 1) {
+      const yearDt = new Date(focusDate.getFullYear() - i, 0, 1, 12, 0, 0, 0);
+      const { start, end } = yearRange(yearDt);
+      const metrics = calculateMetricsForRange(data, start, end);
+      history.push(toReportHistoryRow(toYearKey(start), metrics));
+    }
+
+    return history;
+  }
+
+  for (let i = 6; i >= 0; i -= 1) {
+    const day = new Date(focusDate);
+    day.setDate(focusDate.getDate() - i);
+    const metrics = calculateDailyMetrics(data, day);
+    history.push(toReportHistoryRow(metrics.date, metrics));
+  }
+
+  return history;
 }
 
 function buildDashboard(data) {
@@ -620,8 +739,31 @@ function createErpService() {
       expenses: sortByTimeDesc(Array.isArray(data.expenses) ? data.expenses : []),
       dashboard: buildDashboard(data),
       business: clone(data.meta.business),
+      uiSettings: clone(data.meta.uiSettings || { themeMode: 'auto' }),
       licenseStatus: deriveLicenseStatus(data.meta.license)
     };
+  }
+
+  function upsertUiSettings(payload) {
+    const themeMode = normalizeThemeMode(payload && payload.themeMode);
+    let persisted;
+
+    store.mutate((data) => {
+      const current =
+        data.meta.uiSettings && typeof data.meta.uiSettings === 'object'
+          ? data.meta.uiSettings
+          : { themeMode: 'auto' };
+
+      data.meta.uiSettings = {
+        ...current,
+        themeMode
+      };
+
+      persisted = clone(data.meta.uiSettings);
+      return data;
+    });
+
+    return persisted;
   }
 
   function upsertBusiness(payload) {
@@ -1377,38 +1519,51 @@ function createErpService() {
     };
   }
 
-  function getDailyProfitLoss(inputDate) {
+  function getDailyProfitLoss(payload) {
     assertLicenseActive();
 
     const data = store.get();
-    const parsedDate = toText(inputDate) ? new Date(inputDate) : new Date();
-    const isValidDate = !Number.isNaN(parsedDate.getTime());
-    const focusDate = isValidDate ? parsedDate : new Date();
+    const reportInput =
+      payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? payload
+        : { inputDate: payload };
 
-    const metrics = calculateDailyMetrics(data, focusDate);
+    const period = normalizeReportPeriod(reportInput.period);
+    const focusDate = resolveReportFocusDate(reportInput.inputDate);
 
-    const recentDays = [];
-    for (let i = 6; i >= 0; i -= 1) {
-      const day = new Date(focusDate);
-      day.setDate(focusDate.getDate() - i);
-      const dayMetrics = calculateDailyMetrics(data, day);
-      recentDays.push({
-        date: dayMetrics.date,
-        netSales: dayMetrics.netSales,
-        cogs: dayMetrics.cogs,
-        grossProfit: dayMetrics.grossProfit,
-        purchaseTotal: dayMetrics.purchaseTotal,
-        expenseTotal: dayMetrics.expenseTotal,
-        cashIn: dayMetrics.cashIn,
-        cashOut: dayMetrics.cashOut,
-        netCashflow: dayMetrics.netCashflow
-      });
+    let range;
+    let periodKey;
+    let periodLabel;
+
+    if (period === 'monthly') {
+      range = monthRange(focusDate);
+      periodKey = toMonthKey(range.start);
+      periodLabel = formatMonthLabel(range.start);
+    } else if (period === 'yearly') {
+      range = yearRange(focusDate);
+      periodKey = toYearKey(range.start);
+      periodLabel = toYearKey(range.start);
+    } else {
+      range = dayRange(focusDate);
+      periodKey = toDayKey(range.start);
+      periodLabel = periodKey;
     }
 
+    const metrics = calculateMetricsForRange(data, range.start, range.end);
+    const history = buildReportHistory(data, period, focusDate);
+
     return {
-      date: metrics.date,
+      period,
+      date: toDayKey(focusDate),
+      inputDate: toDayKey(focusDate),
+      periodKey,
+      periodLabel,
       metrics,
-      recentDays
+      history,
+      recentDays: history.map((row) => ({
+        ...row,
+        date: row.label
+      }))
     };
   }
 
@@ -1483,6 +1638,7 @@ function createErpService() {
     getBootstrap,
     getLicenseStatus,
     activateLicenseKey,
+    upsertUiSettings,
     upsertBusiness,
     upsertProduct,
     deleteProduct,

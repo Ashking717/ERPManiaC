@@ -36,6 +36,21 @@ function defaultBusiness() {
   };
 }
 
+function normalizeThemeMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  if (mode === 'light' || mode === 'dark' || mode === 'auto') {
+    return mode;
+  }
+
+  return 'auto';
+}
+
+function defaultUiSettings() {
+  return {
+    themeMode: 'auto'
+  };
+}
+
 function detectSkuCounter(products) {
   let maxNumericSku = 10000;
 
@@ -256,6 +271,15 @@ function normalizeLicense(licenseSource) {
   };
 }
 
+function normalizeUiSettings(uiSettingsSource) {
+  const defaults = defaultUiSettings();
+  const source = uiSettingsSource && typeof uiSettingsSource === 'object' ? uiSettingsSource : {};
+
+  return {
+    themeMode: normalizeThemeMode(source.themeMode || defaults.themeMode)
+  };
+}
+
 function normalizeData(source) {
   const createdAt = nowIso();
   const data = source && typeof source === 'object' ? source : {};
@@ -278,6 +302,7 @@ function normalizeData(source) {
         detectedSkuCounter
       ),
       license: normalizeLicense(meta.license),
+      uiSettings: normalizeUiSettings(meta.uiSettings),
       business: {
         name: String(businessSource.name || businessDefault.name).trim(),
         phone: String(businessSource.phone || businessDefault.phone).trim(),
@@ -310,6 +335,7 @@ function getSeedData() {
       expenseCounter: 0,
       skuCounter: 10000,
       license: defaultLicense(),
+      uiSettings: defaultUiSettings(),
       business: defaultBusiness(),
       createdAt,
       updatedAt: createdAt

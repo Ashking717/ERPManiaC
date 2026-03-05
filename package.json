@@ -1,6 +1,6 @@
 {
   "name": "erpmania-grocery-erp",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Offline Electron ERP app for grocery wholesale and retail billing",
   "main": "main.js",
   "author": "",
@@ -9,7 +9,8 @@
     "start": "electron .",
     "dev": "electron .",
     "check": "node --check main.js && node --check preload.js && node --check src/main/store.js && node --check src/main/erpService.js && node --check src/main/invoiceTemplate.js && node --check src/renderer/app.js",
-    "license:keys": "node scripts/generate-license-codes.js"
+    "license:keys": "node scripts/generate-license-codes.js",
+    "logo:generate": "node scripts/generate-logo.js"
   },
   "devDependencies": {
     "electron": "^30.0.0",
@@ -22,6 +23,7 @@
       "main.js",
       "preload.js",
       "src/**/*",
+      "assets/**/*",
       "package.json"
     ],
     "mac": {
@@ -29,10 +31,12 @@
     },
     "win": {
       "target": "nsis",
+      "icon": "assets/logo/icon.ico",
       "artifactName": "ERPManiaC ERP Setup ${version}.${ext}"
     },
     "linux": {
-      "target": "AppImage"
+      "target": "AppImage",
+      "icon": "assets/logo/icon.png"
     }
   }
 }
