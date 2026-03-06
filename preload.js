@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('erpApi', {
   createSupplierPayment: (payload) => ipcRenderer.invoke('erp:create-supplier-payment', payload),
   createExpense: (payload) => ipcRenderer.invoke('erp:create-expense', payload),
   extractEnglishOcr: (payload) => ipcRenderer.invoke('erp:extract-english-ocr', payload),
+  getCustomerLedger: (customerId) => ipcRenderer.invoke('erp:get-customer-ledger', customerId),
   getSupplierLedger: (supplierId) => ipcRenderer.invoke('erp:get-supplier-ledger', supplierId),
   getDailyProfitLoss: (inputDate) => ipcRenderer.invoke('erp:get-daily-pnl', inputDate),
   getInvoice: (invoiceId) => ipcRenderer.invoke('erp:get-invoice', invoiceId),

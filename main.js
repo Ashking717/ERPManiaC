@@ -210,6 +210,10 @@ function registerIpc() {
     withResponse((payload) => erpService.extractEnglishOcr(payload))
   );
   ipcMain.handle(
+    'erp:get-customer-ledger',
+    withResponse((customerId) => erpService.getCustomerLedger(customerId))
+  );
+  ipcMain.handle(
     'erp:get-supplier-ledger',
     withResponse((supplierId) => erpService.getSupplierLedger(supplierId))
   );

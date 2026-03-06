@@ -264,6 +264,10 @@ body.license-locked {
   box-shadow: var(--shadow);
 }
 
+.panel-span-two {
+  grid-column: 1 / -1;
+}
+
 .panel-head {
   display: flex;
   flex-direction: column;
@@ -561,6 +565,11 @@ textarea:focus {
 .tag.purchase {
   background: #ebf4e9;
   color: #2d5d3c;
+}
+
+.tag.sale {
+  background: #eaf3fb;
+  color: #2b5d7f;
 }
 
 .tag.expense {

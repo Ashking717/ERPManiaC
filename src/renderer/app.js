@@ -10,6 +10,7 @@ const state = {
   business: null,
   draftItems: [],
   purchaseDraftItems: [],
+  customerLedger: null,
   supplierLedger: null,
   pnlReport: null,
   reportPeriod: 'daily',
@@ -21,6 +22,7 @@ const state = {
   purchaseSearch: '',
   billingProductSearch: '',
   expenseSearch: '',
+  selectedLedgerCustomerId: '',
   selectedLedgerSupplierId: '',
   pendingPurchaseBarcode: '',
   purchaseOcrText: ''
@@ -424,6 +426,9 @@ function cacheDom() {
   dom.customerBody = document.getElementById('customers-body');
   dom.customerSaveBtn = document.getElementById('customer-save-btn');
   dom.customerResetBtn = document.getElementById('customer-reset-btn');
+  dom.ledgerCustomerSelect = document.getElementById('ledger-customer-select');
+  dom.customerOutstanding = document.getElementById('customer-outstanding');
+  dom.customerLedgerBody = document.getElementById('customer-ledger-body');
 
   dom.supplierForm = document.getElementById('supplier-form');
   dom.supplierBody = document.getElementById('suppliers-body');
@@ -858,6 +863,9 @@ function bindCustomers() {
       try {
         setStatus('Deleting customer...');
         await invoke('deleteCustomer', id);
+        if (state.selectedLedgerCustomerId === id) {
+          state.selectedLedgerCustomerId = '';
+        }
         await reloadData();
         showToast('Customer deleted');
         setStatus('Live');
@@ -866,6 +874,11 @@ function bindCustomers() {
         showToast(error.message, 'error');
       }
     }
+  });
+
+  dom.ledgerCustomerSelect.addEventListener('change', async () => {
+    state.selectedLedgerCustomerId = dom.ledgerCustomerSelect.value;
+    await loadCustomerLedger();
   });
 }
 
@@ -2334,6 +2347,30 @@ function renderCustomers() {
     .join('');
 }
 
+function renderCustomerOptions() {
+  const selectedLedgerCustomer = state.selectedLedgerCustomerId || dom.ledgerCustomerSelect.value;
+
+  if (!state.customers.length) {
+    dom.ledgerCustomerSelect.innerHTML = '<option value="">No customer</option>';
+    state.selectedLedgerCustomerId = '';
+    return;
+  }
+
+  const optionsHtml = state.customers
+    .map((customer) => `<option value="${customer.id}">${customer.name}</option>`)
+    .join('');
+
+  dom.ledgerCustomerSelect.innerHTML = optionsHtml;
+
+  if (state.customers.some((customer) => customer.id === selectedLedgerCustomer)) {
+    dom.ledgerCustomerSelect.value = selectedLedgerCustomer;
+    state.selectedLedgerCustomerId = selectedLedgerCustomer;
+  } else {
+    dom.ledgerCustomerSelect.value = state.customers[0].id;
+    state.selectedLedgerCustomerId = state.customers[0].id;
+  }
+}
+
 function buildSupplierOutstandingMap() {
   const map = new Map();
   for (const purchase of state.purchases) {
@@ -2397,6 +2434,64 @@ function renderSupplierOptions() {
     dom.ledgerSupplierSelect.value = state.suppliers[0].id;
     state.selectedLedgerSupplierId = state.suppliers[0].id;
   }
+}
+
+async function loadCustomerLedger(silent = false) {
+  if (!state.customers.length) {
+    state.customerLedger = null;
+    renderCustomerLedger();
+    return;
+  }
+
+  const customerId = state.selectedLedgerCustomerId || state.customers[0].id;
+
+  try {
+    const ledger = await invoke('getCustomerLedger', customerId);
+    state.customerLedger = ledger;
+    state.selectedLedgerCustomerId = ledger.selectedCustomerId;
+    dom.ledgerCustomerSelect.value = ledger.selectedCustomerId;
+    renderCustomerLedger();
+  } catch (error) {
+    state.customerLedger = null;
+    renderCustomerLedger();
+    if (!silent) {
+      showToast(error.message, 'error');
+    }
+  }
+}
+
+function renderCustomerLedger() {
+  const ledger = state.customerLedger;
+
+  if (!ledger || !ledger.customer) {
+    dom.customerOutstanding.textContent = formatMoney(0);
+    dom.customerLedgerBody.innerHTML =
+      '<tr><td colspan="7" class="empty">Select customer to view ledger</td></tr>';
+    return;
+  }
+
+  dom.customerOutstanding.textContent = formatMoney(ledger.outstanding || 0);
+
+  if (!ledger.ledgerEntries.length) {
+    dom.customerLedgerBody.innerHTML = '<tr><td colspan="7" class="empty">No ledger entries</td></tr>';
+    return;
+  }
+
+  dom.customerLedgerBody.innerHTML = ledger.ledgerEntries
+    .map(
+      (entry) => `
+        <tr>
+          <td>${formatDate(entry.createdAt)}</td>
+          <td><span class="tag ${entry.type}">${entry.type}</span></td>
+          <td>${entry.reference}</td>
+          <td>${entry.debit ? formatMoney(entry.debit) : '-'}</td>
+          <td>${entry.credit ? formatMoney(entry.credit) : '-'}</td>
+          <td>${formatMoney(entry.runningBalance)}</td>
+          <td>${entry.note || '-'}</td>
+        </tr>
+      `
+    )
+    .join('');
 }
 
 async function loadSupplierLedger(silent = false) {
@@ -3091,6 +3186,7 @@ function renderAll() {
   renderBusiness();
   renderProducts();
   renderCustomers();
+  renderCustomerOptions();
   renderSuppliers();
   renderSupplierOptions();
   renderPurchaseProductOptions();
@@ -3120,6 +3216,13 @@ async function reloadData() {
   state.uiSettings = bootstrap.uiSettings || { themeMode: 'auto' };
 
   if (
+    state.selectedLedgerCustomerId &&
+    !state.customers.some((customer) => customer.id === state.selectedLedgerCustomerId)
+  ) {
+    state.selectedLedgerCustomerId = '';
+  }
+
+  if (
     state.selectedLedgerSupplierId &&
     !state.suppliers.some((supplier) => supplier.id === state.selectedLedgerSupplierId)
   ) {
@@ -3127,6 +3230,7 @@ async function reloadData() {
   }
 
   renderAll();
+  await loadCustomerLedger(true);
   await loadSupplierLedger(true);
   await loadPnlReport(dom.reportDate.value || todayKey(), state.reportPeriod, true);
 }

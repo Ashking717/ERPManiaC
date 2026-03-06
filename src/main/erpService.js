@@ -1591,6 +1591,136 @@ function createErpService() {
     };
   }
 
+  function getCustomerLedger(customerId) {
+    assertLicenseActive();
+
+    const requestedId = toText(customerId);
+    const data = store.get();
+
+    const customers = [...data.customers].sort((a, b) => a.name.localeCompare(b.name));
+    if (!customers.length) {
+      return {
+        customers: [],
+        selectedCustomerId: '',
+        customer: null,
+        outstanding: 0,
+        ledgerEntries: [],
+        openInvoices: []
+      };
+    }
+
+    const selectedCustomerId = requestedId || customers[0].id;
+    const customer = customers.find((entry) => entry.id === selectedCustomerId);
+    assert(customer, 'Customer not found');
+
+    const invoices = data.invoices.filter((invoice) => invoice.customerId === selectedCustomerId);
+
+    const saleEntries = invoices.map((invoice) => ({
+      id: invoice.id,
+      createdAt: invoice.createdAt,
+      type: 'sale',
+      reference: invoice.invoiceNo,
+      debit: round2(toNumber(invoice.total, 0)),
+      credit: 0,
+      note: invoice.notes || '',
+      total: invoice.total,
+      balance: invoice.balance
+    }));
+
+    const paymentEntries = [];
+    for (const invoice of invoices) {
+      const total = round2(toNumber(invoice.total, 0));
+      const balance = round2(Math.max(toNumber(invoice.balance, 0), 0));
+      let remainingPaid = round2(Math.max(total - balance, 0));
+
+      const history = sortByTimeAsc(Array.isArray(invoice.paymentHistory) ? invoice.paymentHistory : []);
+
+      for (let index = 0; index < history.length; index += 1) {
+        if (remainingPaid <= 0) {
+          break;
+        }
+
+        const payment = history[index];
+        const amountRaw = round2(toNumber(payment.amount, 0));
+        if (amountRaw <= 0) {
+          continue;
+        }
+
+        const amount = round2(Math.min(amountRaw, remainingPaid));
+        paymentEntries.push({
+          id: payment.id || `${invoice.id}-payment-${index + 1}`,
+          createdAt: payment.createdAt || invoice.createdAt,
+          type: 'payment',
+          reference: invoice.invoiceNo,
+          debit: 0,
+          credit: amount,
+          note: payment.note || '',
+          total: amount,
+          balance: 0
+        });
+
+        remainingPaid = round2(Math.max(remainingPaid - amount, 0));
+      }
+
+      if (remainingPaid > 0) {
+        paymentEntries.push({
+          id: `${invoice.id}-initial-payment`,
+          createdAt: invoice.createdAt,
+          type: 'payment',
+          reference: invoice.invoiceNo,
+          debit: 0,
+          credit: remainingPaid,
+          note: 'Initial payment',
+          total: remainingPaid,
+          balance: 0
+        });
+      }
+    }
+
+    const ledgerEntries = [...saleEntries, ...paymentEntries].sort((a, b) => {
+      const diff = new Date(a.createdAt) - new Date(b.createdAt);
+      if (diff !== 0) {
+        return diff;
+      }
+
+      if (a.type === b.type) {
+        return 0;
+      }
+
+      return a.type === 'sale' ? -1 : 1;
+    });
+
+    let runningBalance = 0;
+    for (const entry of ledgerEntries) {
+      runningBalance = round2(runningBalance + entry.debit - entry.credit);
+      entry.runningBalance = runningBalance;
+    }
+
+    const openInvoices = sortByTimeAsc(
+      invoices
+        .filter((invoice) => toNumber(invoice.balance, 0) > 0)
+        .map((invoice) => ({
+          id: invoice.id,
+          invoiceNo: invoice.invoiceNo,
+          createdAt: invoice.createdAt,
+          total: invoice.total,
+          paidAmount: invoice.paidAmount,
+          balance: invoice.balance
+        }))
+    );
+
+    const outstanding = round2(invoices.reduce((sum, invoice) => sum + toNumber(invoice.balance, 0), 0));
+
+    return {
+      customers,
+      selectedCustomerId,
+      customer,
+      outstanding,
+      ledgerEntries,
+      openInvoices
+    };
+  }
+
   function getSupplierLedger(supplierId) {
     assertLicenseActive();
 
@@ -1831,6 +1961,7 @@ function createErpService() {
     createSupplierPayment,
     createExpense,
     extractEnglishOcr,
+    getCustomerLedger,
     getSupplierLedger,
     getDailyProfitLoss,
     getInvoice,
