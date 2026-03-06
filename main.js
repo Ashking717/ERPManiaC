@@ -7,6 +7,7 @@ const { renderStockListHtml } = require('./src/main/stockListTemplate');
 
 let mainWindow;
 let erpService;
+let autoBackupTimer = null;
 const previewWindows = new Set();
 const APP_ICON_PATH = path.join(__dirname, 'assets', 'logo', 'erpmaniac-logo-256.png');
 
@@ -126,6 +127,30 @@ function toSafeFilePart(value, fallback = 'ERPManiaC') {
   return cleaned || fallback;
 }
 
+async function pickBackupFolder(currentPath = '') {
+  const normalizedCurrent = typeof currentPath === 'string' ? currentPath.trim() : '';
+  const fallbackPath = app.getPath('documents');
+  const defaultPath = normalizedCurrent || fallbackPath;
+
+  const result = await dialog.showOpenDialog(mainWindow || undefined, {
+    title: 'Select Backup Folder',
+    defaultPath,
+    properties: ['openDirectory', 'createDirectory']
+  });
+
+  if (result.canceled || !Array.isArray(result.filePaths) || result.filePaths.length === 0) {
+    return {
+      selected: false,
+      folderPath: ''
+    };
+  }
+
+  return {
+    selected: true,
+    folderPath: result.filePaths[0]
+  };
+}
+
 async function exportStockListPdf() {
   const payload = erpService.getStockListForPrint();
   const html = renderStockListHtml(payload);
@@ -184,6 +209,17 @@ function registerIpc() {
     withResponse((payload) => erpService.upsertUiSettings(payload))
   );
   ipcMain.handle('erp:upsert-business', withResponse((payload) => erpService.upsertBusiness(payload)));
+  ipcMain.handle('erp:get-backup-settings', withResponse(() => erpService.getBackupSettings()));
+  ipcMain.handle(
+    'erp:upsert-backup-settings',
+    withResponse((payload) => erpService.upsertBackupSettings(payload))
+  );
+  ipcMain.handle('erp:pick-backup-folder', withResponse((currentPath) => pickBackupFolder(currentPath)));
+  ipcMain.handle('erp:run-local-backup', withResponse(() => erpService.runLocalFolderBackup('manual')));
+  ipcMain.handle(
+    'erp:restore-latest-local-backup',
+    withResponse(() => erpService.restoreLatestLocalBackup())
+  );
 
   ipcMain.handle('erp:upsert-product', withResponse((payload) => erpService.upsertProduct(payload)));
   ipcMain.handle('erp:delete-product', withResponse((productId) => erpService.deleteProduct(productId)));
@@ -218,6 +254,10 @@ function registerIpc() {
     withResponse((supplierId) => erpService.getSupplierLedger(supplierId))
   );
   ipcMain.handle(
+    'erp:get-trial-balance',
+    withResponse((payload) => erpService.getTrialBalance(payload))
+  );
+  ipcMain.handle(
     'erp:get-daily-pnl',
     withResponse((inputDate) => erpService.getDailyProfitLoss(inputDate))
   );
@@ -225,6 +265,28 @@ function registerIpc() {
   ipcMain.handle('erp:preview-invoice', withResponse((invoiceId) => previewInvoice(invoiceId)));
   ipcMain.handle('erp:print-invoice', withResponse((invoiceId) => printInvoice(invoiceId)));
   ipcMain.handle('erp:export-stock-list-pdf', withResponse(() => exportStockListPdf()));
+}
+
+function startAutoBackupLoop() {
+  if (autoBackupTimer) {
+    clearInterval(autoBackupTimer);
+    autoBackupTimer = null;
+  }
+
+  const runAutoCheck = async () => {
+    if (!erpService) {
+      return;
+    }
+
+    try {
+      await erpService.runAutoBackupCheck();
+    } catch (error) {
+      console.error('Auto backup check failed:', error && error.message ? error.message : error);
+    }
+  };
+
+  autoBackupTimer = setInterval(runAutoCheck, 5 * 60 * 1000);
+  setTimeout(runAutoCheck, 30 * 1000);
 }
 
 app.whenReady().then(() => {
@@ -235,6 +297,7 @@ app.whenReady().then(() => {
   erpService = createErpService();
   registerIpc();
   createMainWindow();
+  startAutoBackupLoop();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -246,5 +309,12 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
+  }
+});
+
+app.on('before-quit', () => {
+  if (autoBackupTimer) {
+    clearInterval(autoBackupTimer);
+    autoBackupTimer = null;
   }
 });

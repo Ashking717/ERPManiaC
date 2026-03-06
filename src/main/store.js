@@ -51,6 +51,76 @@ function defaultUiSettings() {
   };
 }
 
+function defaultBackupSettings() {
+  return {
+    mode: 'local-folder',
+    enabled: false,
+    folderPath: '',
+    autoBackupEnabled: false,
+    autoBackupIntervalHours: 24,
+    lastBackupAt: null,
+    lastBackupFileId: '',
+    lastBackupFileName: '',
+    lastBackupStatus: 'never',
+    lastBackupError: '',
+    lastRestoreAt: null,
+    lastRestoreFileId: '',
+    lastRestoreFileName: '',
+    lastRestoreStatus: 'never',
+    lastRestoreError: '',
+    updatedAt: nowIso()
+  };
+}
+
+function normalizeStatus(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (text === 'never' || text === 'success' || text === 'failed') {
+    return text;
+  }
+
+  return 'never';
+}
+
+function normalizeIsoOrNull(value) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return null;
+  }
+
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed.toISOString();
+}
+
+function normalizeBackupSettings(backupSource) {
+  const defaults = defaultBackupSettings();
+  const source = backupSource && typeof backupSource === 'object' ? backupSource : {};
+
+  const interval = Math.trunc(toNumber(source.autoBackupIntervalHours, defaults.autoBackupIntervalHours));
+
+  return {
+    mode: String(source.mode || defaults.mode).trim().toLowerCase() === 'local-folder' ? 'local-folder' : 'local-folder',
+    enabled: Boolean(source.enabled),
+    folderPath: String(source.folderPath || '').trim(),
+    autoBackupEnabled: Boolean(source.autoBackupEnabled),
+    autoBackupIntervalHours: Math.max(1, Math.min(168, interval || defaults.autoBackupIntervalHours)),
+    lastBackupAt: normalizeIsoOrNull(source.lastBackupAt),
+    lastBackupFileId: String(source.lastBackupFileId || '').trim(),
+    lastBackupFileName: String(source.lastBackupFileName || '').trim(),
+    lastBackupStatus: normalizeStatus(source.lastBackupStatus),
+    lastBackupError: String(source.lastBackupError || '').trim(),
+    lastRestoreAt: normalizeIsoOrNull(source.lastRestoreAt),
+    lastRestoreFileId: String(source.lastRestoreFileId || '').trim(),
+    lastRestoreFileName: String(source.lastRestoreFileName || '').trim(),
+    lastRestoreStatus: normalizeStatus(source.lastRestoreStatus),
+    lastRestoreError: String(source.lastRestoreError || '').trim(),
+    updatedAt: normalizeIsoOrNull(source.updatedAt) || nowIso()
+  };
+}
+
 function detectSkuCounter(products) {
   let maxNumericSku = 10000;
 
@@ -84,10 +154,15 @@ function defaultLicense() {
 }
 
 function normalizeProduct(product) {
-  const retailPrice = round2(toNumber(product.retailPrice, 0));
+  const legacyRetailPrice = round2(toNumber(product.retailPrice, 0));
+  const loosePrice = round2(toNumber(product.loosePrice, legacyRetailPrice));
+  const retailPrice = loosePrice > 0 ? loosePrice : legacyRetailPrice;
   const wholesalePrice = round2(toNumber(product.wholesalePrice, retailPrice));
   const fallbackCost = wholesalePrice > 0 ? wholesalePrice : retailPrice;
   const costPrice = round2(toNumber(product.costPrice, fallbackCost));
+  const packSize = Math.max(1, Math.trunc(toNumber(product.packSize, 1)));
+  const packEnabled = Boolean(product.packEnabled) && packSize > 1;
+  const packPrice = round2(toNumber(product.packPrice, retailPrice * packSize));
 
   return {
     id: product.id || randomUUID(),
@@ -98,6 +173,10 @@ function normalizeProduct(product) {
     unit: String(product.unit || 'Unit').trim() || 'Unit',
     costPrice: costPrice > 0 ? costPrice : 0,
     retailPrice,
+    loosePrice: retailPrice,
+    packEnabled,
+    packSize,
+    packPrice: packEnabled ? packPrice : 0,
     wholesalePrice,
     wholesaleMinQty: round2(toNumber(product.wholesaleMinQty, 1)),
     stock: round2(toNumber(product.stock, 0)),
@@ -166,6 +245,10 @@ function normalizeInvoice(invoice) {
       ? invoice.items.map((item) => ({
           ...item,
           qty: round2(toNumber(item.qty, 0)),
+          baseQty: round2(toNumber(item.baseQty, item.qty)),
+          saleUnit: String(item.saleUnit || '').toLowerCase() === 'pack' ? 'pack' : 'loose',
+          packSize: Math.max(1, Math.trunc(toNumber(item.packSize, 1))),
+          looseUnit: String(item.looseUnit || item.unit || '').trim(),
           unitPrice: round2(toNumber(item.unitPrice, 0)),
           lineTotal: round2(toNumber(item.lineTotal, 0)),
           costPrice: round2(toNumber(item.costPrice, 0))
@@ -303,6 +386,7 @@ function normalizeData(source) {
       ),
       license: normalizeLicense(meta.license),
       uiSettings: normalizeUiSettings(meta.uiSettings),
+      backup: normalizeBackupSettings(meta.backup),
       business: {
         name: String(businessSource.name || businessDefault.name).trim(),
         phone: String(businessSource.phone || businessDefault.phone).trim(),
@@ -336,6 +420,7 @@ function getSeedData() {
       skuCounter: 10000,
       license: defaultLicense(),
       uiSettings: defaultUiSettings(),
+      backup: defaultBackupSettings(),
       business: defaultBusiness(),
       createdAt,
       updatedAt: createdAt

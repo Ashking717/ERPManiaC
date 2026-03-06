@@ -183,6 +183,65 @@
               </div>
             </form>
           </article>
+
+          <article class="panel mt16">
+            <header class="panel-head">
+              <h3>Google Drive Folder Backup</h3>
+              <p>Use Google Drive Desktop sync folder for manual and auto backups.</p>
+            </header>
+
+            <form id="backup-form" class="form-grid">
+              <label class="inline-check">
+                <input type="checkbox" id="backup-enabled" />
+                <span>Enable Folder Backup</span>
+              </label>
+
+              <label class="inline-check">
+                <input type="checkbox" id="backup-auto-enabled" />
+                <span>Enable Auto Backup</span>
+              </label>
+
+              <label>
+                Auto Backup Interval (Hours)
+                <input id="backup-auto-interval" type="number" min="1" max="168" step="1" value="24" />
+              </label>
+
+              <label class="full-width">
+                Backup Folder (Google Drive Desktop)
+                <input id="backup-folder-path" placeholder="Choose synced folder path" readonly />
+              </label>
+
+              <div class="actions-row">
+                <button type="button" class="btn subtle" id="backup-choose-folder-btn">Choose Folder</button>
+              </div>
+
+              <label class="full-width">
+                Backup Status
+                <input id="backup-status" readonly />
+              </label>
+
+              <label class="full-width">
+                Last Backup File
+                <input id="backup-last-file" readonly />
+              </label>
+
+              <label class="full-width">
+                Last Error
+                <textarea id="backup-last-error" rows="2" readonly></textarea>
+              </label>
+
+              <div class="actions-row">
+                <button type="submit" class="btn primary" id="backup-save-btn">Save Backup Settings</button>
+                <button type="button" class="btn ghost" id="backup-manual-btn">Backup Now</button>
+                <button type="button" class="btn warn" id="backup-restore-btn">Restore Latest</button>
+              </div>
+            </form>
+
+            <p class="muted mt12">
+              Select your Google Drive Desktop synced folder once. Manual and auto backup overwrite
+              <strong>ERPManiaC-Backup-Latest.json</strong>, and restore imports from that same latest file.
+            </p>
+          </article>
         </section>
 
         <section class="view" id="view-products">
@@ -252,14 +311,29 @@
                 </select>
               </label>
 
+              <label class="inline-check">
+                <input type="checkbox" id="product-pack-enabled" />
+                <span>Enable Pack + Loose Sale</span>
+              </label>
+
+              <label>
+                Pack Size (Loose/Pack)
+                <input id="product-pack-size" type="number" min="2" step="1" value="1" />
+              </label>
+
+              <label>
+                Pack Price (Retail)
+                <input id="product-pack-price" type="number" min="0.01" step="0.01" value="0" />
+              </label>
+
               <label>
                 Cost Price
                 <input id="product-cost-price" type="number" min="0" step="0.01" required />
               </label>
 
               <label>
-                Retail Price
-                <input id="product-retail-price" type="number" min="0" step="0.01" required />
+                Loose Price (Retail)
+                <input id="product-loose-price" type="number" min="0" step="0.01" required />
               </label>
 
               <label>
@@ -303,7 +377,7 @@
                     <th>Barcode</th>
                     <th>Stock</th>
                     <th>Cost</th>
-                    <th>Retail</th>
+                    <th>Retail (Loose/Pack)</th>
                     <th>Wholesale</th>
                     <th>Actions</th>
                   </tr>
@@ -543,129 +617,12 @@
                   <textarea id="purchase-notes" rows="2" placeholder="Optional remarks"></textarea>
                 </label>
               </form>
-
-              <article class="panel mt12">
-                <header class="panel-head">
-                  <h3>Quick Add Supplier</h3>
-                  <p>Create a supplier without leaving purchase entry.</p>
-                </header>
-
-                <form id="purchase-supplier-form" class="form-grid">
-                  <label>
-                    Supplier Name
-                    <input id="purchase-supplier-name" required />
-                  </label>
-
-                  <label>
-                    Phone
-                    <input id="purchase-supplier-phone" />
-                  </label>
-
-                  <label>
-                    GSTIN (Optional)
-                    <input id="purchase-supplier-gstin" placeholder="Optional" />
-                  </label>
-
-                  <label class="full-width">
-                    Address
-                    <textarea id="purchase-supplier-address" rows="2"></textarea>
-                  </label>
-
-                  <div class="actions-row">
-                    <button type="submit" class="btn subtle" id="purchase-supplier-save-btn">Save Supplier</button>
-                  </div>
-                </form>
-              </article>
-
-              <article class="panel mt12">
-                <header class="panel-head">
-                  <h3>Quick Add Product (Zero Stock)</h3>
-                  <p>Add a new item now and receive stock through this purchase.</p>
-                </header>
-
-                <form id="purchase-product-form" class="form-grid three-col">
-                  <label>
-                    Product Name
-                    <input id="purchase-product-name" placeholder="Item name" required />
-                  </label>
-
-                  <label>
-                    Barcode (Optional)
-                    <input id="purchase-product-barcode" placeholder="Scan or enter barcode" />
-                  </label>
-
-                  <label>
-                    Category
-                    <select id="purchase-product-category">
-                      <option value="General">General</option>
-                      <option value="Essentials">Essentials</option>
-                      <option value="Grains">Grains</option>
-                      <option value="Pulses">Pulses</option>
-                      <option value="Spices">Spices</option>
-                      <option value="Cooking Oil">Cooking Oil</option>
-                      <option value="Dairy">Dairy</option>
-                      <option value="Beverages">Beverages</option>
-                      <option value="Snacks">Snacks</option>
-                      <option value="Bakery">Bakery</option>
-                      <option value="Frozen">Frozen</option>
-                      <option value="Fruits & Vegetables">Fruits & Vegetables</option>
-                      <option value="Household">Household</option>
-                      <option value="Personal Care">Personal Care</option>
-                    </select>
-                  </label>
-
-                  <label>
-                    Unit
-                    <select id="purchase-product-unit">
-                      <option value="Unit">Unit</option>
-                      <option value="Piece">Piece</option>
-                      <option value="Pack">Pack</option>
-                      <option value="Packet">Packet</option>
-                      <option value="Bag">Bag</option>
-                      <option value="Bottle">Bottle</option>
-                      <option value="Box">Box</option>
-                      <option value="Pouch">Pouch</option>
-                      <option value="Can">Can</option>
-                      <option value="Jar">Jar</option>
-                      <option value="Kg">Kg</option>
-                      <option value="Gram">Gram</option>
-                      <option value="Litre">Litre</option>
-                      <option value="ml">ml</option>
-                      <option value="Dozen">Dozen</option>
-                      <option value="Carton">Carton</option>
-                    </select>
-                  </label>
-
-                  <label>
-                    Cost Price
-                    <input id="purchase-product-cost-price" type="number" min="0.01" step="0.01" required />
-                  </label>
-
-                  <label>
-                    Retail Price
-                    <input id="purchase-product-retail-price" type="number" min="0.01" step="0.01" required />
-                  </label>
-
-                  <label>
-                    Wholesale Price
-                    <input id="purchase-product-wholesale-price" type="number" min="0.01" step="0.01" required />
-                  </label>
-
-                  <label>
-                    Wholesale Min Qty (Optional)
-                    <input id="purchase-product-wholesale-min-qty" type="number" min="1" step="0.01" placeholder="Default 1" />
-                  </label>
-
-                  <label>
-                    Reorder Level (Optional)
-                    <input id="purchase-product-reorder-level" type="number" min="0" step="0.01" placeholder="Default 0" />
-                  </label>
-
-                  <div class="actions-row">
-                    <button type="submit" class="btn subtle" id="purchase-product-save-btn">Save Product (Stock 0)</button>
-                  </div>
-                </form>
-              </article>
+              <div class="quick-action-strip mt12">
+                <button type="button" class="btn subtle" id="open-purchase-supplier-modal-btn">Quick Add Supplier</button>
+                <button type="button" class="btn subtle" id="open-purchase-product-modal-btn">
+                  Quick Add Product (Stock 0)
+                </button>
+              </div>
             </article>
 
             <article class="panel">
@@ -686,7 +643,7 @@
                 <small>Press Enter after scan. SKU can also be scanned or typed.</small>
               </div>
 
-              <div class="quick-row four-col purchase-add-row">
+              <div class="quick-row purchase-add-row">
                 <label>
                   Product
                   <select id="purchase-draft-product-id"></select>
@@ -878,47 +835,9 @@
                   <textarea id="invoice-notes" rows="2" placeholder="Optional remarks"></textarea>
                 </label>
               </form>
-
-              <article class="panel mt12">
-                <header class="panel-head">
-                  <h3>Quick Add Customer</h3>
-                  <p>Create customer directly while billing.</p>
-                </header>
-
-                <form id="billing-customer-form" class="form-grid">
-                  <label>
-                    Customer Name
-                    <input id="billing-customer-name" required />
-                  </label>
-
-                  <label>
-                    Customer Type
-                    <select id="billing-customer-type">
-                      <option value="retail">Retail</option>
-                      <option value="wholesale">Wholesale</option>
-                    </select>
-                  </label>
-
-                  <label>
-                    Phone
-                    <input id="billing-customer-phone" />
-                  </label>
-
-                  <label>
-                    GSTIN (Optional)
-                    <input id="billing-customer-gstin" placeholder="Optional" />
-                  </label>
-
-                  <label class="full-width">
-                    Address
-                    <textarea id="billing-customer-address" rows="2"></textarea>
-                  </label>
-
-                  <div class="actions-row">
-                    <button type="submit" class="btn subtle" id="billing-customer-save-btn">Save Customer</button>
-                  </div>
-                </form>
-              </article>
+              <div class="quick-action-strip mt12">
+                <button type="button" class="btn subtle" id="open-billing-customer-modal-btn">Quick Add Customer</button>
+              </div>
             </article>
 
             <article class="panel">
@@ -943,10 +862,17 @@
                 <small>Filters product dropdown for manual add.</small>
               </div>
 
-              <div class="quick-row">
+              <div class="quick-row billing-add-row">
                 <label>
                   Product
                   <select id="draft-product-id"></select>
+                </label>
+
+                <label>
+                  Sale Unit
+                  <select id="draft-sale-unit">
+                    <option value="loose">Loose</option>
+                  </select>
                 </label>
 
                 <label>
@@ -1046,6 +972,39 @@
                   </tr>
                 </thead>
                 <tbody id="pnl-history-body"></tbody>
+              </table>
+            </div>
+
+            <header class="panel-head mt16">
+              <h3 id="trial-balance-title">Trial Balance</h3>
+              <p class="muted" id="trial-balance-status">Balanced</p>
+            </header>
+
+            <div class="card-grid" id="trial-balance-cards">
+              <article class="metric-card">
+                <p class="metric-label">Total Debit</p>
+                <p class="metric-value" id="trial-balance-debit-total">Rs 0.00</p>
+              </article>
+              <article class="metric-card">
+                <p class="metric-label">Total Credit</p>
+                <p class="metric-value" id="trial-balance-credit-total">Rs 0.00</p>
+              </article>
+              <article class="metric-card">
+                <p class="metric-label">Difference</p>
+                <p class="metric-value" id="trial-balance-diff-total">Rs 0.00</p>
+              </article>
+            </div>
+
+            <div class="table-wrap mt12">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Account</th>
+                    <th>Debit</th>
+                    <th>Credit</th>
+                  </tr>
+                </thead>
+                <tbody id="trial-balance-body"></tbody>
               </table>
             </div>
           </article>
@@ -1203,6 +1162,205 @@
           <button type="button" class="btn primary" id="purchase-ocr-apply-btn">Use In Notes</button>
         </div>
       </div>
+    </dialog>
+
+    <dialog id="purchase-supplier-modal" class="quick-modal">
+      <form id="purchase-supplier-form" class="quick-modal-card form-grid">
+        <header class="panel-head">
+          <h3>Quick Add Supplier</h3>
+          <p>Create a supplier without leaving purchase entry.</p>
+        </header>
+
+        <label>
+          Supplier Name
+          <input id="purchase-supplier-name" required />
+        </label>
+
+        <label>
+          Phone
+          <input id="purchase-supplier-phone" />
+        </label>
+
+        <label>
+          GSTIN (Optional)
+          <input id="purchase-supplier-gstin" placeholder="Optional" />
+        </label>
+
+        <label class="full-width">
+          Address
+          <textarea id="purchase-supplier-address" rows="2"></textarea>
+        </label>
+
+        <div class="actions-row">
+          <button type="button" class="btn subtle" id="purchase-supplier-cancel-btn">Cancel</button>
+          <button type="submit" class="btn primary" id="purchase-supplier-save-btn">Save Supplier</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="purchase-product-modal" class="quick-modal">
+      <form id="purchase-product-form" class="quick-modal-card form-grid three-col">
+        <header class="panel-head full-width">
+          <h3>Quick Add Product (Zero Stock)</h3>
+          <p>Add a new item now and receive stock through this purchase.</p>
+        </header>
+
+        <label>
+          Product Name
+          <input id="purchase-product-name" placeholder="Item name" required />
+        </label>
+
+        <label>
+          Barcode (Optional)
+          <input id="purchase-product-barcode" placeholder="Scan or enter barcode" />
+        </label>
+
+        <label>
+          Category
+          <select id="purchase-product-category">
+            <option value="General">General</option>
+            <option value="Essentials">Essentials</option>
+            <option value="Grains">Grains</option>
+            <option value="Pulses">Pulses</option>
+            <option value="Spices">Spices</option>
+            <option value="Cooking Oil">Cooking Oil</option>
+            <option value="Dairy">Dairy</option>
+            <option value="Beverages">Beverages</option>
+            <option value="Snacks">Snacks</option>
+            <option value="Bakery">Bakery</option>
+            <option value="Frozen">Frozen</option>
+            <option value="Fruits & Vegetables">Fruits & Vegetables</option>
+            <option value="Household">Household</option>
+            <option value="Personal Care">Personal Care</option>
+          </select>
+        </label>
+
+        <label>
+          Unit
+          <select id="purchase-product-unit">
+            <option value="Unit">Unit</option>
+            <option value="Piece">Piece</option>
+            <option value="Pack">Pack</option>
+            <option value="Packet">Packet</option>
+            <option value="Bag">Bag</option>
+            <option value="Bottle">Bottle</option>
+            <option value="Box">Box</option>
+            <option value="Pouch">Pouch</option>
+            <option value="Can">Can</option>
+            <option value="Jar">Jar</option>
+            <option value="Kg">Kg</option>
+            <option value="Gram">Gram</option>
+            <option value="Litre">Litre</option>
+            <option value="ml">ml</option>
+            <option value="Dozen">Dozen</option>
+            <option value="Carton">Carton</option>
+          </select>
+        </label>
+
+        <label>
+          Cost Price
+          <input id="purchase-product-cost-price" type="number" min="0.01" step="0.01" required />
+        </label>
+
+        <label>
+          Retail Price
+          <input id="purchase-product-retail-price" type="number" min="0.01" step="0.01" required />
+        </label>
+
+        <label>
+          Wholesale Price
+          <input id="purchase-product-wholesale-price" type="number" min="0.01" step="0.01" required />
+        </label>
+
+        <label>
+          Wholesale Min Qty (Optional)
+          <input id="purchase-product-wholesale-min-qty" type="number" min="1" step="0.01" placeholder="Default 1" />
+        </label>
+
+        <label>
+          Reorder Level (Optional)
+          <input id="purchase-product-reorder-level" type="number" min="0" step="0.01" placeholder="Default 0" />
+        </label>
+
+        <div class="actions-row">
+          <button type="button" class="btn subtle" id="purchase-product-cancel-btn">Cancel</button>
+          <button type="submit" class="btn primary" id="purchase-product-save-btn">Save Product (Stock 0)</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="billing-customer-modal" class="quick-modal">
+      <form id="billing-customer-form" class="quick-modal-card form-grid">
+        <header class="panel-head">
+          <h3>Quick Add Customer</h3>
+          <p>Create customer directly while billing.</p>
+        </header>
+
+        <label>
+          Customer Name
+          <input id="billing-customer-name" required />
+        </label>
+
+        <label>
+          Customer Type
+          <select id="billing-customer-type">
+            <option value="retail">Retail</option>
+            <option value="wholesale">Wholesale</option>
+          </select>
+        </label>
+
+        <label>
+          Phone
+          <input id="billing-customer-phone" />
+        </label>
+
+        <label>
+          GSTIN (Optional)
+          <input id="billing-customer-gstin" placeholder="Optional" />
+        </label>
+
+        <label class="full-width">
+          Address
+          <textarea id="billing-customer-address" rows="2"></textarea>
+        </label>
+
+        <div class="actions-row">
+          <button type="button" class="btn subtle" id="billing-customer-cancel-btn">Cancel</button>
+          <button type="submit" class="btn primary" id="billing-customer-save-btn">Save Customer</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="invoice-payment-modal" class="quick-modal">
+      <form id="invoice-payment-form" class="quick-modal-card form-grid">
+        <header class="panel-head">
+          <h3>Receive Invoice Payment</h3>
+          <p id="invoice-payment-meta">Invoice details</p>
+        </header>
+
+        <input type="hidden" id="invoice-payment-invoice-id" />
+
+        <label>
+          Pending Amount
+          <input id="invoice-payment-pending" readonly />
+        </label>
+
+        <label>
+          Receive Amount
+          <input id="invoice-payment-amount" type="number" min="0.01" step="0.01" required />
+        </label>
+
+        <label class="full-width">
+          Note (Optional)
+          <input id="invoice-payment-note" placeholder="Partial/payment note" />
+        </label>
+
+        <div class="actions-row">
+          <button type="button" class="btn subtle" id="invoice-payment-cancel-btn">Cancel</button>
+          <button type="button" class="btn ghost" id="invoice-payment-full-btn">Receive Full</button>
+          <button type="submit" class="btn primary" id="invoice-payment-partial-btn">Receive Partial</button>
+        </div>
+      </form>
     </dialog>
 
     <div id="toast" class="toast"></div>

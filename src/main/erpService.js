@@ -1,6 +1,5 @@
 const fs = require('fs');
 const path = require('path');
-const http = require('http');
 const { randomUUID, createHash } = require('crypto');
 const { app } = require('electron');
 const { LocalStore, nowIso, clone } = require('./store');
@@ -13,6 +12,7 @@ const GOD_LICENSE_KEY = '909090909090';
 const OCR_LANGUAGE = 'eng';
 const OCR_LANG_BASENAME = `${OCR_LANGUAGE}.traineddata`;
 const OCR_LANG_GZIP_BASENAME = `${OCR_LANG_BASENAME}.gz`;
+const BACKUP_ROLLING_FILE_NAME = 'ERPManiaC-Backup-Latest.json';
 
 function assert(condition, message) {
   if (!condition) {
@@ -56,6 +56,87 @@ function normalizeThemeMode(value) {
   }
 
   return 'auto';
+}
+
+function normalizeIsoOrNull(value) {
+  const text = toText(value);
+  if (!text) {
+    return null;
+  }
+
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed.toISOString();
+}
+
+function normalizeBackupStatus(value) {
+  const text = toText(value).toLowerCase();
+  if (text === 'success' || text === 'failed' || text === 'never') {
+    return text;
+  }
+
+  return 'never';
+}
+
+function defaultBackupSettings() {
+  return {
+    mode: 'local-folder',
+    enabled: false,
+    folderPath: '',
+    autoBackupEnabled: false,
+    autoBackupIntervalHours: 24,
+    lastBackupAt: null,
+    lastBackupFileId: '',
+    lastBackupFileName: '',
+    lastBackupStatus: 'never',
+    lastBackupError: '',
+    lastRestoreAt: null,
+    lastRestoreFileId: '',
+    lastRestoreFileName: '',
+    lastRestoreStatus: 'never',
+    lastRestoreError: '',
+    updatedAt: nowIso()
+  };
+}
+
+function normalizeBackupSettings(source) {
+  const defaults = defaultBackupSettings();
+  const input = source && typeof source === 'object' ? source : {};
+  const interval = Math.trunc(toNumber(input.autoBackupIntervalHours, defaults.autoBackupIntervalHours));
+
+  return {
+    mode: toText(input.mode).toLowerCase() === 'local-folder' ? 'local-folder' : 'local-folder',
+    enabled: Boolean(input.enabled),
+    folderPath: toText(input.folderPath),
+    autoBackupEnabled: Boolean(input.autoBackupEnabled),
+    autoBackupIntervalHours: Math.max(1, Math.min(168, interval || defaults.autoBackupIntervalHours)),
+    lastBackupAt: normalizeIsoOrNull(input.lastBackupAt),
+    lastBackupFileId: toText(input.lastBackupFileId),
+    lastBackupFileName: toText(input.lastBackupFileName),
+    lastBackupStatus: normalizeBackupStatus(input.lastBackupStatus),
+    lastBackupError: toText(input.lastBackupError),
+    lastRestoreAt: normalizeIsoOrNull(input.lastRestoreAt),
+    lastRestoreFileId: toText(input.lastRestoreFileId),
+    lastRestoreFileName: toText(input.lastRestoreFileName),
+    lastRestoreStatus: normalizeBackupStatus(input.lastRestoreStatus),
+    lastRestoreError: toText(input.lastRestoreError),
+    updatedAt: normalizeIsoOrNull(input.updatedAt) || nowIso()
+  };
+}
+
+function hasBackupFolderPath(settings) {
+  return Boolean(toText(settings && settings.folderPath));
+}
+
+function parseJsonSafely(text, fallback = null) {
+  try {
+    return JSON.parse(text);
+  } catch (_error) {
+    return fallback;
+  }
 }
 
 function invoicePrefixFromStoreName(storeName) {
@@ -211,24 +292,56 @@ function isWithinRange(value, start, end) {
   return dt >= start && dt < end;
 }
 
-function getPriceByChannel(product, channel, qty) {
+function productPackMeta(product) {
+  const packSize = Math.max(1, Math.trunc(toNumber(product && product.packSize, 1)));
+  const looseUnit = toText(product && product.unit) || 'Unit';
+  const loosePrice = round2(toNumber(product && product.loosePrice, product && product.retailPrice));
+  const packEnabled = Boolean(product && product.packEnabled) && packSize > 1;
+  const packPrice = round2(
+    packEnabled
+      ? toNumber(product && product.packPrice, loosePrice * packSize)
+      : loosePrice * packSize
+  );
+
+  return {
+    packEnabled,
+    packSize,
+    looseUnit,
+    loosePrice,
+    packPrice
+  };
+}
+
+function getPriceByChannel(product, channel, qty, saleUnit) {
+  const meta = productPackMeta(product);
+  const normalizedSaleUnit = toText(saleUnit).toLowerCase() === 'pack' ? 'pack' : 'loose';
+  const usePack = normalizedSaleUnit === 'pack' && meta.packEnabled;
+  const baseQty = round2(usePack ? qty * meta.packSize : qty);
+  const unitLabel = usePack ? 'Pack' : meta.looseUnit;
+
   if (channel === 'wholesale') {
-    if (qty >= product.wholesaleMinQty) {
-      return {
-        unitPrice: product.wholesalePrice,
-        pricingMode: 'wholesale'
-      };
-    }
+    const perLoosePrice =
+      baseQty >= product.wholesaleMinQty ? product.wholesalePrice : meta.loosePrice;
 
     return {
-      unitPrice: product.retailPrice,
-      pricingMode: 'retail-fallback'
+      unitPrice: usePack ? round2(perLoosePrice * meta.packSize) : perLoosePrice,
+      pricingMode: baseQty >= product.wholesaleMinQty ? 'wholesale' : 'retail-fallback',
+      saleUnit: usePack ? 'pack' : 'loose',
+      unitLabel,
+      baseQty,
+      packSize: meta.packSize,
+      looseUnit: meta.looseUnit
     };
   }
 
   return {
-    unitPrice: product.retailPrice,
-    pricingMode: 'retail'
+    unitPrice: usePack ? meta.packPrice : meta.loosePrice,
+    pricingMode: usePack ? 'retail-pack' : 'retail-loose',
+    saleUnit: usePack ? 'pack' : 'loose',
+    unitLabel,
+    baseQty,
+    packSize: meta.packSize,
+    looseUnit: meta.looseUnit
   };
 }
 
@@ -446,14 +559,14 @@ function calculateMetricsForRange(data, start, end) {
   );
 
   let cogs = 0;
-  for (const invoice of scopedInvoices) {
-    const items = Array.isArray(invoice.items) ? invoice.items : [];
-    for (const item of items) {
-      const qty = toNumber(item.qty, 0);
-      const fallbackCost = toNumber(productById.get(item.productId)?.costPrice, 0);
-      const lineCost = toNumber(item.costPrice, fallbackCost);
-      cogs += qty * lineCost;
-    }
+    for (const invoice of scopedInvoices) {
+      const items = Array.isArray(invoice.items) ? invoice.items : [];
+      for (const item of items) {
+        const qty = toNumber(item.baseQty, toNumber(item.qty, 0));
+        const fallbackCost = toNumber(productById.get(item.productId)?.costPrice, 0);
+        const lineCost = toNumber(item.costPrice, fallbackCost);
+        cogs += qty * lineCost;
+      }
   }
   cogs = round2(cogs);
 
@@ -784,6 +897,7 @@ function getTesseractModule() {
 
 function createErpService() {
   const store = new LocalStore();
+  let autoBackupInProgress = false;
 
   function getLicenseStatus() {
     const data = store.get();
@@ -794,6 +908,297 @@ function createErpService() {
     const status = getLicenseStatus();
     assert(status.isActive, 'License expired. Enter a valid 12-digit license key to continue.');
     return status;
+  }
+
+  function getBackupSettings() {
+    const data = store.get();
+    return normalizeBackupSettings(data.meta.backup);
+  }
+
+  function upsertBackupSettings(payload) {
+    assertLicenseActive();
+
+    const input = payload && typeof payload === 'object' ? payload : {};
+    const previous = getBackupSettings();
+    const merged = normalizeBackupSettings({
+      ...previous,
+      enabled: Object.prototype.hasOwnProperty.call(input, 'enabled') ? Boolean(input.enabled) : previous.enabled,
+      folderPath: Object.prototype.hasOwnProperty.call(input, 'folderPath')
+        ? normalizeBackupDirectoryPath(input.folderPath)
+        : previous.folderPath,
+      autoBackupEnabled: Object.prototype.hasOwnProperty.call(input, 'autoBackupEnabled')
+        ? Boolean(input.autoBackupEnabled)
+        : previous.autoBackupEnabled,
+      autoBackupIntervalHours: Object.prototype.hasOwnProperty.call(input, 'autoBackupIntervalHours')
+        ? input.autoBackupIntervalHours
+        : previous.autoBackupIntervalHours,
+      updatedAt: nowIso()
+    });
+
+    let persisted;
+    store.mutate((data) => {
+      data.meta.backup = merged;
+      persisted = clone(data.meta.backup);
+      return data;
+    });
+
+    return persisted;
+  }
+
+  function buildBackupExportPayload(data, triggerType) {
+    const exportData = clone(data);
+    if (exportData.meta) {
+      exportData.meta.backup = normalizeBackupSettings(exportData.meta.backup);
+    }
+
+    return {
+      app: 'ERPManiaC',
+      formatVersion: 1,
+      exportedAt: nowIso(),
+      triggerType,
+      data: exportData
+    };
+  }
+
+  function validateBackupConfiguration(settings) {
+    assert(settings.enabled, 'Enable backup first');
+    assert(hasBackupFolderPath(settings), 'Choose backup folder first');
+  }
+
+  function normalizeBackupDirectoryPath(folderPath) {
+    const raw = toText(folderPath);
+    return raw ? path.resolve(raw) : '';
+  }
+
+  function ensureBackupDirectory(folderPath) {
+    const resolved = normalizeBackupDirectoryPath(folderPath);
+    assert(resolved, 'Choose backup folder first');
+
+    try {
+      fs.mkdirSync(resolved, { recursive: true });
+      const stat = fs.statSync(resolved);
+      assert(stat.isDirectory(), 'Backup path is not a folder');
+    } catch (_error) {
+      throw new Error('Backup folder is not accessible');
+    }
+
+    return resolved;
+  }
+
+  function listBackupFiles(folderPath) {
+    const resolved = ensureBackupDirectory(folderPath);
+    const entries = fs.readdirSync(resolved, { withFileTypes: true });
+    const files = entries
+      .filter((entry) => entry.isFile() && /\.json$/i.test(entry.name))
+      .map((entry) => {
+        const fullPath = path.join(resolved, entry.name);
+        const stat = fs.statSync(fullPath);
+        return {
+          id: fullPath,
+          name: entry.name,
+          filePath: fullPath,
+          modifiedAt: new Date(stat.mtimeMs || stat.mtime || Date.now()).toISOString()
+        };
+      })
+      .sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
+
+    return files;
+  }
+
+  function backupFileMeta(filePath) {
+    const stat = fs.statSync(filePath);
+    return {
+      id: filePath,
+      name: path.basename(filePath),
+      filePath,
+      modifiedAt: new Date(stat.mtimeMs || stat.mtime || Date.now()).toISOString()
+    };
+  }
+
+  function applyBackupRestoreData(currentSettings, file, restoredData) {
+    assert(restoredData && typeof restoredData === 'object', 'Backup file is invalid');
+
+    store.mutate(() => {
+      const nextData = clone(restoredData);
+      nextData.meta = nextData.meta && typeof nextData.meta === 'object' ? nextData.meta : {};
+      nextData.meta.backup = normalizeBackupSettings({
+        ...(nextData.meta.backup || {}),
+        ...currentSettings,
+        lastRestoreAt: nowIso(),
+        lastRestoreFileId: file.id,
+        lastRestoreFileName: file.name,
+        lastRestoreStatus: 'success',
+        lastRestoreError: '',
+        updatedAt: nowIso()
+      });
+
+      return nextData;
+    });
+  }
+
+  async function runLocalFolderBackup(triggerType = 'manual') {
+    assertLicenseActive();
+
+    const currentSettings = getBackupSettings();
+    validateBackupConfiguration(currentSettings);
+    const backupFolder = ensureBackupDirectory(currentSettings.folderPath);
+
+    try {
+      const data = store.get();
+      const backupPayload = buildBackupExportPayload(data, triggerType);
+      const jsonText = JSON.stringify(backupPayload, null, 2);
+      const fileName = BACKUP_ROLLING_FILE_NAME;
+      const filePath = path.join(backupFolder, fileName);
+
+      fs.writeFileSync(filePath, jsonText, 'utf8');
+
+      let persisted;
+      store.mutate((nextData) => {
+        const existing = normalizeBackupSettings(nextData.meta.backup);
+        nextData.meta.backup = normalizeBackupSettings({
+          ...existing,
+          ...currentSettings,
+          folderPath: backupFolder,
+          lastBackupAt: nowIso(),
+          lastBackupFileId: filePath,
+          lastBackupFileName: fileName,
+          lastBackupStatus: 'success',
+          lastBackupError: '',
+          updatedAt: nowIso()
+        });
+        persisted = clone(nextData.meta.backup);
+        return nextData;
+      });
+
+      return {
+        ok: true,
+        triggerType,
+        folderPath: backupFolder,
+        fileId: filePath,
+        filePath,
+        fileName,
+        settings: persisted
+      };
+    } catch (error) {
+      store.mutate((nextData) => {
+        const existing = normalizeBackupSettings(nextData.meta.backup);
+        nextData.meta.backup = normalizeBackupSettings({
+          ...existing,
+          ...currentSettings,
+          lastBackupStatus: 'failed',
+          lastBackupError: error.message || 'Backup failed',
+          updatedAt: nowIso()
+        });
+        return nextData;
+      });
+      throw error;
+    }
+  }
+
+  async function restoreLatestLocalBackup() {
+    assertLicenseActive();
+
+    const currentSettings = getBackupSettings();
+    validateBackupConfiguration(currentSettings);
+
+    try {
+      const backupFolder = ensureBackupDirectory(currentSettings.folderPath);
+      const rollingFilePath = path.join(backupFolder, BACKUP_ROLLING_FILE_NAME);
+      let latest = null;
+
+      if (fs.existsSync(rollingFilePath)) {
+        try {
+          const stat = fs.statSync(rollingFilePath);
+          if (stat.isFile()) {
+            latest = backupFileMeta(rollingFilePath);
+          }
+        } catch (_error) {
+          latest = null;
+        }
+      }
+
+      if (!latest) {
+        const files = listBackupFiles(backupFolder);
+        assert(files.length > 0, 'No backup files found in selected folder');
+        latest = files[0];
+      }
+
+      const fileContent = fs.readFileSync(latest.filePath, 'utf8');
+      const parsed = parseJsonSafely(fileContent, null);
+      assert(parsed && typeof parsed === 'object', 'Backup file content is invalid');
+      const restoredData =
+        parsed.data && typeof parsed.data === 'object' && parsed.data.meta ? parsed.data : parsed;
+
+      applyBackupRestoreData(
+        {
+          ...currentSettings
+        },
+        latest,
+        restoredData
+      );
+
+      return {
+        restoredAt: nowIso(),
+        fileId: latest.id,
+        filePath: latest.filePath,
+        fileName: latest.name
+      };
+    } catch (error) {
+      store.mutate((nextData) => {
+        const existing = normalizeBackupSettings(nextData.meta.backup);
+        nextData.meta.backup = normalizeBackupSettings({
+          ...existing,
+          ...currentSettings,
+          lastRestoreStatus: 'failed',
+          lastRestoreError: error.message || 'Restore failed',
+          updatedAt: nowIso()
+        });
+        return nextData;
+      });
+      throw error;
+    }
+  }
+
+  async function runAutoBackupCheck() {
+    const settings = getBackupSettings();
+    if (!settings.enabled || !settings.autoBackupEnabled) {
+      return {
+        skipped: true,
+        reason: 'disabled'
+      };
+    }
+
+    if (!hasBackupFolderPath(settings)) {
+      return {
+        skipped: true,
+        reason: 'folder-missing'
+      };
+    }
+
+    const now = Date.now();
+    const lastBackupAt = settings.lastBackupAt ? new Date(settings.lastBackupAt).getTime() : 0;
+    const intervalMs = settings.autoBackupIntervalHours * 60 * 60 * 1000;
+
+    if (lastBackupAt && now - lastBackupAt < intervalMs) {
+      return {
+        skipped: true,
+        reason: 'not-due'
+      };
+    }
+
+    if (autoBackupInProgress) {
+      return {
+        skipped: true,
+        reason: 'in-progress'
+      };
+    }
+
+    autoBackupInProgress = true;
+    try {
+      return await runLocalFolderBackup('auto');
+    } finally {
+      autoBackupInProgress = false;
+    }
   }
 
   function activateLicenseKey(payload) {
@@ -880,6 +1285,7 @@ function createErpService() {
       expenses: sortByTimeDesc(Array.isArray(data.expenses) ? data.expenses : []),
       dashboard: buildDashboard(data),
       business: clone(data.meta.business),
+      backup: normalizeBackupSettings(data.meta.backup),
       uiSettings: clone(data.meta.uiSettings || { themeMode: 'auto' }),
       licenseStatus: deriveLicenseStatus(data.meta.license)
     };
@@ -943,11 +1349,17 @@ function createErpService() {
     const category = toText(payload.category) || 'General';
     const unit = toText(payload.unit) || 'Unit';
 
-    const retailPrice = round2(toNumber(payload.retailPrice, NaN));
+    const loosePrice = round2(toNumber(payload.loosePrice, payload.retailPrice));
+    const retailPrice = loosePrice;
     const wholesalePrice = round2(toNumber(payload.wholesalePrice, NaN));
     const fallbackCost =
       Number.isFinite(wholesalePrice) && wholesalePrice > 0 ? wholesalePrice : retailPrice;
     const costPrice = round2(toNumber(payload.costPrice, fallbackCost));
+    const packEnabled = Boolean(payload.packEnabled);
+    const packSize = packEnabled ? Math.max(2, Math.trunc(toNumber(payload.packSize, NaN))) : 1;
+    const packPrice = packEnabled
+      ? round2(toNumber(payload.packPrice, loosePrice * packSize))
+      : 0;
     const wholesaleMinQtyText = toText(payload.wholesaleMinQty);
     const wholesaleMinQty = wholesaleMinQtyText
       ? round2(toNumber(wholesaleMinQtyText, NaN))
@@ -960,8 +1372,12 @@ function createErpService() {
 
     assert(name.length > 0, 'Product name is required');
     assert(Number.isFinite(costPrice) && costPrice > 0, 'Cost price must be greater than 0');
-    assert(Number.isFinite(retailPrice) && retailPrice > 0, 'Retail price must be greater than 0');
+    assert(Number.isFinite(loosePrice) && loosePrice > 0, 'Loose price must be greater than 0');
     assert(Number.isFinite(wholesalePrice) && wholesalePrice > 0, 'Wholesale price must be greater than 0');
+    if (packEnabled) {
+      assert(Number.isFinite(packSize) && packSize >= 2, 'Pack size must be at least 2');
+      assert(Number.isFinite(packPrice) && packPrice > 0, 'Pack price must be greater than 0');
+    }
     assert(
       Number.isFinite(wholesaleMinQty) && wholesaleMinQty >= 1,
       'Wholesale minimum quantity must be at least 1 when provided'
@@ -992,6 +1408,10 @@ function createErpService() {
         existing.unit = unit;
         existing.costPrice = costPrice;
         existing.retailPrice = retailPrice;
+        existing.loosePrice = loosePrice;
+        existing.packEnabled = packEnabled;
+        existing.packSize = packEnabled ? packSize : 1;
+        existing.packPrice = packEnabled ? packPrice : 0;
         existing.wholesalePrice = wholesalePrice;
         existing.wholesaleMinQty = wholesaleMinQty;
         existing.stock = stock;
@@ -1011,6 +1431,10 @@ function createErpService() {
         unit,
         costPrice,
         retailPrice,
+        loosePrice,
+        packEnabled,
+        packSize: packEnabled ? packSize : 1,
+        packPrice: packEnabled ? packPrice : 0,
         wholesalePrice,
         wholesaleMinQty,
         stock,
@@ -1214,16 +1638,20 @@ function createErpService() {
     const rawItems = Array.isArray(payload.items) ? payload.items : [];
     assert(rawItems.length > 0, 'Add at least one invoice item');
 
-    const itemMap = new Map();
+    const itemLines = [];
     for (const item of rawItems) {
       const productId = toText(item.productId);
       const qty = round2(toNumber(item.qty, NaN));
+      const saleUnit = toText(item.saleUnit).toLowerCase() === 'pack' ? 'pack' : 'loose';
 
       assert(productId, 'Each invoice item needs a product');
       assert(Number.isFinite(qty) && qty > 0, 'Item quantity must be greater than 0');
 
-      const existingQty = itemMap.get(productId) || 0;
-      itemMap.set(productId, round2(existingQty + qty));
+      itemLines.push({
+        productId,
+        qty,
+        saleUnit
+      });
     }
 
     let createdInvoice;
@@ -1242,28 +1670,42 @@ function createErpService() {
 
       const items = [];
       let subtotal = 0;
+      const stockRequired = new Map();
 
-      for (const [productId, qty] of itemMap.entries()) {
-        const product = data.products.find((entry) => entry.id === productId);
+      for (const lineInput of itemLines) {
+        const product = data.products.find((entry) => entry.id === lineInput.productId);
         assert(product, 'Invoice item has an invalid product');
-        assert(product.stock >= qty, `Insufficient stock for ${product.name}`);
 
-        const pricing = getPriceByChannel(product, channel, qty);
-        const lineTotal = round2(pricing.unitPrice * qty);
+        const pricing = getPriceByChannel(product, channel, lineInput.qty, lineInput.saleUnit);
+        const baseQty = round2(toNumber(pricing.baseQty, lineInput.qty));
+        const lineTotal = round2(pricing.unitPrice * lineInput.qty);
 
         subtotal = round2(subtotal + lineTotal);
+        const requiredQty = round2(toNumber(stockRequired.get(product.id), 0) + baseQty);
+        stockRequired.set(product.id, requiredQty);
+
         items.push({
-          productId,
+          productId: product.id,
           sku: product.sku,
           barcode: product.barcode,
           name: product.name,
-          unit: product.unit,
-          qty,
+          unit: pricing.unitLabel,
+          qty: lineInput.qty,
+          baseQty,
+          saleUnit: pricing.saleUnit,
+          packSize: pricing.packSize,
+          looseUnit: pricing.looseUnit,
           unitPrice: pricing.unitPrice,
           costPrice: round2(toNumber(product.costPrice, product.wholesalePrice)),
           lineTotal,
           pricingMode: pricing.pricingMode
         });
+      }
+
+      for (const [productId, requiredQty] of stockRequired.entries()) {
+        const product = data.products.find((entry) => entry.id === productId);
+        assert(product, 'Invoice item has an invalid product');
+        assert(product.stock >= requiredQty, `Insufficient stock for ${product.name}`);
       }
 
       const taxableValue = round2(Math.max(subtotal - discount, 0));
@@ -1278,9 +1720,9 @@ function createErpService() {
 
       data.meta.invoiceCounter = (data.meta.invoiceCounter || 0) + 1;
 
-      for (const line of items) {
-        const product = data.products.find((entry) => entry.id === line.productId);
-        product.stock = round2(product.stock - line.qty);
+      for (const [productId, requiredQty] of stockRequired.entries()) {
+        const product = data.products.find((entry) => entry.id === productId);
+        product.stock = round2(product.stock - requiredQty);
         product.updatedAt = nowIso();
       }
 
@@ -1815,6 +2257,191 @@ function createErpService() {
     };
   }
 
+  function resolveReportRange(period, focusDate) {
+    if (period === 'monthly') {
+      const range = monthRange(focusDate);
+      return {
+        range,
+        periodKey: toMonthKey(range.start),
+        periodLabel: formatMonthLabel(range.start)
+      };
+    }
+
+    if (period === 'yearly') {
+      const range = yearRange(focusDate);
+      return {
+        range,
+        periodKey: toYearKey(range.start),
+        periodLabel: toYearKey(range.start)
+      };
+    }
+
+    const range = dayRange(focusDate);
+    const periodKey = toDayKey(range.start);
+    return {
+      range,
+      periodKey,
+      periodLabel: periodKey
+    };
+  }
+
+  function getTrialBalance(payload) {
+    assertLicenseActive();
+
+    const data = store.get();
+    const reportInput =
+      payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? payload
+        : { inputDate: payload };
+
+    const period = normalizeReportPeriod(reportInput.period);
+    const focusDate = resolveReportFocusDate(reportInput.inputDate);
+    const { range, periodKey, periodLabel } = resolveReportRange(period, focusDate);
+    const cutoff = range.end;
+
+    const balances = new Map();
+    const post = (account, debitValue, creditValue) => {
+      const debit = round2(Math.max(toNumber(debitValue, 0), 0));
+      const credit = round2(Math.max(toNumber(creditValue, 0), 0));
+      if (debit <= 0 && credit <= 0) {
+        return;
+      }
+
+      const current = round2(toNumber(balances.get(account), 0));
+      balances.set(account, round2(current + debit - credit));
+    };
+
+    const isBeforeCutoff = (inputDate) => {
+      const dt = new Date(inputDate);
+      return !Number.isNaN(dt.getTime()) && dt < cutoff;
+    };
+
+    const invoices = data.invoices.filter((invoice) => isBeforeCutoff(invoice.createdAt));
+    for (const invoice of invoices) {
+      const taxableValue = round2(
+        toNumber(invoice.taxableValue, toNumber(invoice.total, 0) - toNumber(invoice.gstAmount, 0))
+      );
+      const gstAmount = round2(toNumber(invoice.gstAmount, 0));
+      const total = round2(toNumber(invoice.total, taxableValue + gstAmount));
+
+      const paymentHistory = Array.isArray(invoice.paymentHistory) ? invoice.paymentHistory : [];
+      const historyTotal = round2(
+        paymentHistory.reduce((sum, payment) => sum + round2(toNumber(payment.amount, 0)), 0)
+      );
+      const paidAmount = round2(toNumber(invoice.paidAmount, Math.max(total - toNumber(invoice.balance, 0), 0)));
+      const initialPaid = round2(Math.max(paidAmount - historyTotal, 0));
+      const initialReceivable = round2(Math.max(total - initialPaid, 0));
+
+      post('Cash in Hand', initialPaid, 0);
+      post('Accounts Receivable', initialReceivable, 0);
+      post('Sales', 0, taxableValue);
+      post('Output GST', 0, gstAmount);
+
+      const items = Array.isArray(invoice.items) ? invoice.items : [];
+      let cogs = 0;
+      for (const item of items) {
+        const qty = toNumber(item.baseQty, toNumber(item.qty, 0));
+        const costPrice = toNumber(item.costPrice, 0);
+        cogs += qty * costPrice;
+      }
+      cogs = round2(cogs);
+
+      post('Cost of Goods Sold', cogs, 0);
+      post('Inventory', 0, cogs);
+
+      for (const payment of paymentHistory) {
+        if (!isBeforeCutoff(payment.createdAt || invoice.createdAt)) {
+          continue;
+        }
+
+        const amount = round2(toNumber(payment.amount, 0));
+        post('Cash in Hand', amount, 0);
+        post('Accounts Receivable', 0, amount);
+      }
+    }
+
+    const purchases = data.purchases.filter((purchase) => isBeforeCutoff(purchase.createdAt));
+    for (const purchase of purchases) {
+      const taxableValue = round2(
+        toNumber(purchase.taxableValue, toNumber(purchase.total, 0) - toNumber(purchase.gstAmount, 0))
+      );
+      const gstAmount = round2(toNumber(purchase.gstAmount, 0));
+      const paidAmount = round2(toNumber(purchase.paidAmount, 0));
+      const dueAmount = round2(toNumber(purchase.dueAmount, Math.max(toNumber(purchase.total, 0) - paidAmount, 0)));
+
+      post('Inventory', taxableValue, 0);
+      post('Input GST', gstAmount, 0);
+      post('Cash in Hand', 0, paidAmount);
+      post('Accounts Payable', 0, dueAmount);
+    }
+
+    const supplierPayments = data.supplierPayments.filter((payment) => isBeforeCutoff(payment.createdAt));
+    for (const payment of supplierPayments) {
+      const amount = round2(toNumber(payment.amount, 0));
+      post('Accounts Payable', amount, 0);
+      post('Cash in Hand', 0, amount);
+    }
+
+    const expenses = (Array.isArray(data.expenses) ? data.expenses : []).filter((expense) =>
+      isBeforeCutoff(expense.createdAt)
+    );
+    for (const expense of expenses) {
+      const amount = round2(toNumber(expense.amount, 0));
+      post('Operating Expenses', amount, 0);
+      post('Cash in Hand', 0, amount);
+    }
+
+    const accountOrder = [
+      'Cash in Hand',
+      'Accounts Receivable',
+      'Inventory',
+      'Input GST',
+      'Cost of Goods Sold',
+      'Operating Expenses',
+      'Accounts Payable',
+      'Output GST',
+      'Sales'
+    ];
+
+    const extraAccounts = [...balances.keys()]
+      .filter((account) => !accountOrder.includes(account))
+      .sort((a, b) => a.localeCompare(b));
+    const orderedAccounts = [...accountOrder, ...extraAccounts];
+
+    const rows = orderedAccounts.map((account) => {
+      const balance = round2(toNumber(balances.get(account), 0));
+      return {
+        account,
+        debit: balance > 0 ? balance : 0,
+        credit: balance < 0 ? Math.abs(balance) : 0
+      };
+    });
+
+    const totals = rows.reduce(
+      (sum, row) => ({
+        debit: round2(sum.debit + row.debit),
+        credit: round2(sum.credit + row.credit)
+      }),
+      { debit: 0, credit: 0 }
+    );
+    const difference = round2(Math.abs(totals.debit - totals.credit));
+
+    return {
+      period,
+      inputDate: toDayKey(focusDate),
+      periodKey,
+      periodLabel,
+      asOf: toDayKey(new Date(range.end.getTime() - 1)),
+      rows,
+      totals: {
+        debit: totals.debit,
+        credit: totals.credit,
+        difference
+      },
+      isBalanced: difference <= 0.01
+    };
+  }
+
   function getDailyProfitLoss(payload) {
     assertLicenseActive();
 
@@ -1826,24 +2453,7 @@ function createErpService() {
 
     const period = normalizeReportPeriod(reportInput.period);
     const focusDate = resolveReportFocusDate(reportInput.inputDate);
-
-    let range;
-    let periodKey;
-    let periodLabel;
-
-    if (period === 'monthly') {
-      range = monthRange(focusDate);
-      periodKey = toMonthKey(range.start);
-      periodLabel = formatMonthLabel(range.start);
-    } else if (period === 'yearly') {
-      range = yearRange(focusDate);
-      periodKey = toYearKey(range.start);
-      periodLabel = toYearKey(range.start);
-    } else {
-      range = dayRange(focusDate);
-      periodKey = toDayKey(range.start);
-      periodLabel = periodKey;
-    }
+    const { range, periodKey, periodLabel } = resolveReportRange(period, focusDate);
 
     const metrics = calculateMetricsForRange(data, range.start, range.end);
     const history = buildReportHistory(data, period, focusDate);
@@ -1879,12 +2489,15 @@ function createErpService() {
       const invoice = data.invoices.find((entry) => entry.id === invoiceId);
       assert(invoice, 'Invoice not found');
 
-      const currentBalance = round2(toNumber(invoice.balance, 0));
+      const totalValue = round2(toNumber(invoice.total, 0));
+      const currentPaid = round2(toNumber(invoice.paidAmount, 0));
+      const fallbackBalance = round2(Math.max(totalValue - currentPaid, 0));
+      const currentBalance = round2(Math.max(toNumber(invoice.balance, fallbackBalance), 0));
       assert(currentBalance > 0, 'Invoice is already fully paid');
       assert(amount <= currentBalance, 'Payment cannot exceed pending balance');
 
-      const nextPaidAmount = round2(toNumber(invoice.paidAmount, 0) + amount);
-      const nextBalance = round2(Math.max(toNumber(invoice.total, 0) - nextPaidAmount, 0));
+      const nextPaidAmount = round2(currentPaid + amount);
+      const nextBalance = round2(Math.max(totalValue - nextPaidAmount, 0));
 
       invoice.paidAmount = nextPaidAmount;
       invoice.balance = nextBalance;
@@ -1949,6 +2562,11 @@ function createErpService() {
     activateLicenseKey,
     upsertUiSettings,
     upsertBusiness,
+    getBackupSettings,
+    upsertBackupSettings,
+    runLocalFolderBackup,
+    restoreLatestLocalBackup,
+    runAutoBackupCheck,
     upsertProduct,
     deleteProduct,
     upsertCustomer,
@@ -1963,6 +2581,7 @@ function createErpService() {
     extractEnglishOcr,
     getCustomerLedger,
     getSupplierLedger,
+    getTrialBalance,
     getDailyProfitLoss,
     getInvoice,
     getInvoiceForPrint,

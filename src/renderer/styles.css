@@ -343,6 +343,10 @@ tbody tr:hover {
   color: #2f4d3d;
 }
 
+.form-grid .full-width {
+  grid-column: 1 / -1;
+}
+
 .form-grid label.full-width {
   grid-column: 1 / -1;
 }
@@ -460,7 +464,7 @@ textarea:focus {
 
 .quick-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 110px 100px;
+  grid-template-columns: minmax(0, 1fr) 180px 100px 96px;
   align-items: end;
   gap: 10px;
   margin-bottom: 10px;
@@ -470,14 +474,48 @@ textarea:focus {
   min-width: 0;
 }
 
+.billing-add-row {
+  grid-template-columns: minmax(0, 1fr) 180px 100px 96px;
+}
+
+.billing-add-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+
+.billing-add-row select,
+.billing-add-row input {
+  width: 100%;
+  min-width: 0;
+}
+
+.billing-add-row .btn {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  align-self: end;
+}
+
+.quick-action-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.quick-action-strip .btn {
+  min-width: 180px;
+}
+
 .quick-row.four-col {
   grid-template-columns: minmax(180px, 1fr) 100px 120px 130px;
 }
 
 .purchase-add-row {
-  grid-template-columns: minmax(0, 1fr) 110px 150px 120px;
+  grid-template-columns: minmax(0, 1fr) minmax(88px, 108px) minmax(120px, 140px) 88px;
   align-items: end;
-  gap: 12px;
+  gap: 10px;
   margin-bottom: 12px;
   padding: 12px;
   border: 1px solid var(--line-soft);
@@ -499,11 +537,11 @@ textarea:focus {
 }
 
 .purchase-add-row .btn {
-  margin: 0;
+  width: 100%;
+  min-width: 0;
   height: 40px;
-  min-width: 96px;
-  width: auto;
-  justify-self: start;
+  margin: 0;
+  justify-self: stretch;
   align-self: end;
   white-space: nowrap;
 }
@@ -684,6 +722,11 @@ textarea:focus {
 
 .muted {
   color: var(--muted);
+}
+
+.trial-unbalanced {
+  color: #8b3b2f;
+  font-weight: 700;
 }
 
 .empty {
@@ -1330,7 +1373,7 @@ html[data-theme="dark"] .quick-modal-card {
   }
 
   .quick-row {
-    grid-template-columns: minmax(140px, 1fr) 100px 100px;
+    grid-template-columns: minmax(140px, 1fr) 120px 100px 100px;
   }
 
   .quick-row.four-col {
@@ -1338,7 +1381,7 @@ html[data-theme="dark"] .quick-modal-card {
   }
 
   .purchase-add-row {
-    grid-template-columns: minmax(0, 1fr) 100px 130px 110px;
+    grid-template-columns: minmax(0, 1fr) 96px 124px 84px;
   }
 
   .form-grid.three-col {
@@ -1386,6 +1429,11 @@ html[data-theme="dark"] .quick-modal-card {
   .quick-row,
   .quick-row.four-col {
     grid-template-columns: 1fr;
+  }
+
+  .quick-action-strip .btn {
+    width: 100%;
+    min-width: 0;
   }
 
   .quick-row .wide {

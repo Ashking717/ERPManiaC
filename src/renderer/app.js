@@ -8,11 +8,13 @@ const state = {
   expenses: [],
   dashboard: null,
   business: null,
+  backup: null,
   draftItems: [],
   purchaseDraftItems: [],
   customerLedger: null,
   supplierLedger: null,
   pnlReport: null,
+  trialBalanceReport: null,
   reportPeriod: 'daily',
   licenseStatus: null,
   uiSettings: null,
@@ -85,6 +87,51 @@ function formatDate(value) {
   });
 }
 
+function normalizeSaleUnit(value) {
+  return String(value || '').toLowerCase() === 'pack' ? 'pack' : 'loose';
+}
+
+function getProductPackConfig(product) {
+  const packSize = Math.max(1, Math.trunc(toNumber(product && product.packSize, 1)));
+  const looseUnit = String((product && product.unit) || 'Unit').trim() || 'Unit';
+  const loosePrice = round2(toNumber(product && product.loosePrice, product && product.retailPrice));
+  const packEnabled = Boolean(product && product.packEnabled) && packSize > 1;
+  const packPrice = round2(
+    packEnabled
+      ? toNumber(product && product.packPrice, loosePrice * packSize)
+      : loosePrice * packSize
+  );
+
+  return {
+    packEnabled,
+    packSize,
+    looseUnit,
+    loosePrice,
+    packPrice
+  };
+}
+
+function toBaseQty(product, qty, saleUnit) {
+  const config = getProductPackConfig(product);
+  const cleanQty = round2(toNumber(qty, 0));
+  const mode = normalizeSaleUnit(saleUnit);
+  if (mode === 'pack' && config.packEnabled) {
+    return round2(cleanQty * config.packSize);
+  }
+
+  return cleanQty;
+}
+
+function getDisplayUnit(product, saleUnit) {
+  const config = getProductPackConfig(product);
+  const mode = normalizeSaleUnit(saleUnit);
+  if (mode === 'pack' && config.packEnabled) {
+    return 'Pack';
+  }
+
+  return config.looseUnit;
+}
+
 function findProductByBarcodeOrSku(code) {
   const normalized = String(code || '').trim();
   if (!normalized) {
@@ -114,8 +161,12 @@ function processBillingBarcodeScan() {
     return;
   }
 
+  dom.draftProductId.value = product.id;
+  renderBillingSaleUnitOptions(product);
+
   const qty = toNumber(dom.draftQty.value, 1);
-  const added = addDraftItem(product.id, qty);
+  const saleUnit = normalizeSaleUnit(dom.draftSaleUnit.value);
+  const added = addDraftItem(product.id, qty, saleUnit);
   if (added) {
     showToast(`Added ${product.name}`);
   }
@@ -259,6 +310,13 @@ function getInvoicePaymentStatus(invoice) {
   }
 
   return 'unpaid';
+}
+
+function getInvoicePendingAmount(invoice) {
+  const total = round2(toNumber(invoice && invoice.total, 0));
+  const paid = round2(toNumber(invoice && invoice.paidAmount, 0));
+  const fallbackBalance = round2(Math.max(total - paid, 0));
+  return round2(Math.max(toNumber(invoice && invoice.balance, fallbackBalance), 0));
 }
 
 function setStatus(text) {
@@ -415,12 +473,28 @@ function cacheDom() {
   dom.businessAddress = document.getElementById('business-address');
   dom.businessInvoicePrefix = document.getElementById('business-invoice-prefix');
   dom.businessSaveBtn = document.getElementById('business-save-btn');
+  dom.backupForm = document.getElementById('backup-form');
+  dom.backupEnabled = document.getElementById('backup-enabled');
+  dom.backupAutoEnabled = document.getElementById('backup-auto-enabled');
+  dom.backupAutoInterval = document.getElementById('backup-auto-interval');
+  dom.backupFolderPath = document.getElementById('backup-folder-path');
+  dom.backupChooseFolderBtn = document.getElementById('backup-choose-folder-btn');
+  dom.backupStatus = document.getElementById('backup-status');
+  dom.backupLastFile = document.getElementById('backup-last-file');
+  dom.backupLastError = document.getElementById('backup-last-error');
+  dom.backupSaveBtn = document.getElementById('backup-save-btn');
+  dom.backupManualBtn = document.getElementById('backup-manual-btn');
+  dom.backupRestoreBtn = document.getElementById('backup-restore-btn');
 
   dom.productForm = document.getElementById('product-form');
   dom.productBody = document.getElementById('products-body');
   dom.productSaveBtn = document.getElementById('product-save-btn');
   dom.productResetBtn = document.getElementById('product-reset-btn');
   dom.productStockPdfBtn = document.getElementById('product-stock-pdf-btn');
+  dom.productPackEnabled = document.getElementById('product-pack-enabled');
+  dom.productPackSize = document.getElementById('product-pack-size');
+  dom.productPackPrice = document.getElementById('product-pack-price');
+  dom.productLoosePrice = document.getElementById('product-loose-price');
 
   dom.customerForm = document.getElementById('customer-form');
   dom.customerBody = document.getElementById('customers-body');
@@ -466,14 +540,19 @@ function cacheDom() {
   dom.purchaseSubmitBtn = document.getElementById('purchase-submit-btn');
   dom.purchaseSearch = document.getElementById('purchase-search');
   dom.purchasesBody = document.getElementById('purchases-body');
+  dom.openPurchaseSupplierModalBtn = document.getElementById('open-purchase-supplier-modal-btn');
+  dom.openPurchaseProductModalBtn = document.getElementById('open-purchase-product-modal-btn');
 
+  dom.purchaseSupplierModal = document.getElementById('purchase-supplier-modal');
   dom.purchaseSupplierForm = document.getElementById('purchase-supplier-form');
   dom.purchaseSupplierName = document.getElementById('purchase-supplier-name');
   dom.purchaseSupplierPhone = document.getElementById('purchase-supplier-phone');
   dom.purchaseSupplierGstin = document.getElementById('purchase-supplier-gstin');
   dom.purchaseSupplierAddress = document.getElementById('purchase-supplier-address');
+  dom.purchaseSupplierCancelBtn = document.getElementById('purchase-supplier-cancel-btn');
   dom.purchaseSupplierSaveBtn = document.getElementById('purchase-supplier-save-btn');
 
+  dom.purchaseProductModal = document.getElementById('purchase-product-modal');
   dom.purchaseProductForm = document.getElementById('purchase-product-form');
   dom.purchaseProductName = document.getElementById('purchase-product-name');
   dom.purchaseProductBarcode = document.getElementById('purchase-product-barcode');
@@ -484,6 +563,7 @@ function cacheDom() {
   dom.purchaseProductWholesalePrice = document.getElementById('purchase-product-wholesale-price');
   dom.purchaseProductWholesaleMinQty = document.getElementById('purchase-product-wholesale-min-qty');
   dom.purchaseProductReorderLevel = document.getElementById('purchase-product-reorder-level');
+  dom.purchaseProductCancelBtn = document.getElementById('purchase-product-cancel-btn');
   dom.purchaseProductSaveBtn = document.getElementById('purchase-product-save-btn');
   dom.purchaseUnknownBarcodeModal = document.getElementById('purchase-unknown-barcode-modal');
   dom.purchaseUnknownProductForm = document.getElementById('purchase-unknown-product-form');
@@ -529,17 +609,21 @@ function cacheDom() {
   dom.invoiceDiscount = document.getElementById('invoice-discount');
   dom.invoicePaid = document.getElementById('invoice-paid');
   dom.invoiceNotes = document.getElementById('invoice-notes');
+  dom.openBillingCustomerModalBtn = document.getElementById('open-billing-customer-modal-btn');
+  dom.billingCustomerModal = document.getElementById('billing-customer-modal');
   dom.billingCustomerForm = document.getElementById('billing-customer-form');
   dom.billingCustomerName = document.getElementById('billing-customer-name');
   dom.billingCustomerType = document.getElementById('billing-customer-type');
   dom.billingCustomerPhone = document.getElementById('billing-customer-phone');
   dom.billingCustomerGstin = document.getElementById('billing-customer-gstin');
   dom.billingCustomerAddress = document.getElementById('billing-customer-address');
+  dom.billingCustomerCancelBtn = document.getElementById('billing-customer-cancel-btn');
   dom.billingCustomerSaveBtn = document.getElementById('billing-customer-save-btn');
 
   dom.barcodeInput = document.getElementById('barcode-input');
   dom.billingProductSearch = document.getElementById('billing-product-search');
   dom.draftProductId = document.getElementById('draft-product-id');
+  dom.draftSaleUnit = document.getElementById('draft-sale-unit');
   dom.draftQty = document.getElementById('draft-qty');
   dom.addItemBtn = document.getElementById('add-item-btn');
   dom.draftItemsBody = document.getElementById('draft-items-body');
@@ -553,6 +637,16 @@ function cacheDom() {
 
   dom.invoiceSearch = document.getElementById('invoice-search');
   dom.invoicesBody = document.getElementById('invoices-body');
+  dom.invoicePaymentModal = document.getElementById('invoice-payment-modal');
+  dom.invoicePaymentForm = document.getElementById('invoice-payment-form');
+  dom.invoicePaymentMeta = document.getElementById('invoice-payment-meta');
+  dom.invoicePaymentInvoiceId = document.getElementById('invoice-payment-invoice-id');
+  dom.invoicePaymentPending = document.getElementById('invoice-payment-pending');
+  dom.invoicePaymentAmount = document.getElementById('invoice-payment-amount');
+  dom.invoicePaymentNote = document.getElementById('invoice-payment-note');
+  dom.invoicePaymentCancelBtn = document.getElementById('invoice-payment-cancel-btn');
+  dom.invoicePaymentFullBtn = document.getElementById('invoice-payment-full-btn');
+  dom.invoicePaymentPartialBtn = document.getElementById('invoice-payment-partial-btn');
 
   dom.reportTitle = document.getElementById('report-title');
   dom.reportPeriod = document.getElementById('report-period');
@@ -561,6 +655,12 @@ function cacheDom() {
   dom.reportCards = document.getElementById('report-cards');
   dom.reportHistoryLabel = document.getElementById('report-history-label');
   dom.pnlHistoryBody = document.getElementById('pnl-history-body');
+  dom.trialBalanceTitle = document.getElementById('trial-balance-title');
+  dom.trialBalanceStatus = document.getElementById('trial-balance-status');
+  dom.trialBalanceDebitTotal = document.getElementById('trial-balance-debit-total');
+  dom.trialBalanceCreditTotal = document.getElementById('trial-balance-credit-total');
+  dom.trialBalanceDiffTotal = document.getElementById('trial-balance-diff-total');
+  dom.trialBalanceBody = document.getElementById('trial-balance-body');
 }
 
 function bindNavigation() {
@@ -672,6 +772,174 @@ function bindBusiness() {
   });
 }
 
+function normalizeBackupSettingsForUi(backup) {
+  const source = backup && typeof backup === 'object' ? backup : {};
+  const interval = Math.trunc(toNumber(source.autoBackupIntervalHours, 24));
+  return {
+    mode: String(source.mode || 'local-folder').trim().toLowerCase() === 'local-folder' ? 'local-folder' : 'local-folder',
+    enabled: Boolean(source.enabled),
+    autoBackupEnabled: Boolean(source.autoBackupEnabled),
+    autoBackupIntervalHours: Math.max(1, Math.min(168, interval || 24)),
+    folderPath: String(source.folderPath || '').trim(),
+    lastBackupAt: source.lastBackupAt || null,
+    lastBackupFileName: String(source.lastBackupFileName || '').trim(),
+    lastBackupStatus: String(source.lastBackupStatus || 'never').trim().toLowerCase(),
+    lastBackupError: String(source.lastBackupError || '').trim(),
+    lastRestoreAt: source.lastRestoreAt || null,
+    lastRestoreFileName: String(source.lastRestoreFileName || '').trim(),
+    lastRestoreStatus: String(source.lastRestoreStatus || 'never').trim().toLowerCase(),
+    lastRestoreError: String(source.lastRestoreError || '').trim()
+  };
+}
+
+function backupStatusLabel(status, timeValue) {
+  const normalized = String(status || 'never').toLowerCase();
+  if (normalized === 'success') {
+    return `Success${timeValue ? ` (${formatDate(timeValue)})` : ''}`;
+  }
+
+  if (normalized === 'failed') {
+    return `Failed${timeValue ? ` (${formatDate(timeValue)})` : ''}`;
+  }
+
+  return 'Never';
+}
+
+function updateBackupFormState() {
+  if (!dom.backupForm) {
+    return;
+  }
+
+  const enabled = Boolean(dom.backupEnabled && dom.backupEnabled.checked);
+  const autoEnabled = Boolean(dom.backupAutoEnabled && dom.backupAutoEnabled.checked);
+  const controlsDisabled = !enabled;
+
+  [dom.backupFolderPath, dom.backupAutoEnabled, dom.backupManualBtn, dom.backupRestoreBtn].forEach((node) => {
+    if (node) {
+      node.disabled = controlsDisabled;
+    }
+  });
+
+  if (dom.backupChooseFolderBtn) {
+    dom.backupChooseFolderBtn.disabled = controlsDisabled;
+  }
+
+  if (dom.backupAutoInterval) {
+    dom.backupAutoInterval.disabled = controlsDisabled || !autoEnabled;
+  }
+}
+
+function readBackupPayloadFromForm() {
+  return {
+    mode: 'local-folder',
+    enabled: Boolean(dom.backupEnabled && dom.backupEnabled.checked),
+    autoBackupEnabled: Boolean(dom.backupAutoEnabled && dom.backupAutoEnabled.checked),
+    autoBackupIntervalHours: Math.max(1, Math.min(168, Math.trunc(toNumber(dom.backupAutoInterval.value, 24)))),
+    folderPath: dom.backupFolderPath.value
+  };
+}
+
+async function saveBackupSettings(options = {}) {
+  const { silentSuccess = false } = options;
+  const payload = readBackupPayloadFromForm();
+  const updated = await invoke('upsertBackupSettings', payload);
+  state.backup = normalizeBackupSettingsForUi(updated);
+  renderBackupSettings();
+  if (!silentSuccess) {
+    showToast('Backup settings saved');
+  }
+  return updated;
+}
+
+function bindBackup() {
+  if (!dom.backupForm) {
+    return;
+  }
+
+  if (dom.backupChooseFolderBtn) {
+    dom.backupChooseFolderBtn.addEventListener('click', async () => {
+      try {
+        const currentPath = dom.backupFolderPath.value;
+        const result = await invoke('pickBackupFolder', currentPath);
+        if (result && result.selected && result.folderPath) {
+          dom.backupFolderPath.value = result.folderPath;
+        }
+      } catch (error) {
+        showToast(error.message, 'error');
+      }
+    });
+  }
+
+  if (dom.backupEnabled) {
+    dom.backupEnabled.addEventListener('change', () => {
+      updateBackupFormState();
+    });
+  }
+
+  if (dom.backupAutoEnabled) {
+    dom.backupAutoEnabled.addEventListener('change', () => {
+      updateBackupFormState();
+    });
+  }
+
+  dom.backupForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const previousStatus = dom.statusPill.textContent;
+    try {
+      setStatus('Saving backup settings...');
+      await saveBackupSettings();
+      setStatus(previousStatus);
+    } catch (error) {
+      setStatus(previousStatus);
+      showToast(error.message, 'error');
+    }
+  });
+
+  if (dom.backupManualBtn) {
+    dom.backupManualBtn.addEventListener('click', async () => {
+      const previousStatus = dom.statusPill.textContent;
+      try {
+        setStatus('Saving backup settings...');
+        await saveBackupSettings({ silentSuccess: true });
+        setStatus('Creating backup file...');
+        const result = await invoke('runLocalBackup');
+        await reloadData();
+        showToast(`Backup created: ${result.fileName}`);
+        setStatus(previousStatus);
+      } catch (error) {
+        setStatus(previousStatus);
+        showToast(error.message, 'error');
+      }
+    });
+  }
+
+  if (dom.backupRestoreBtn) {
+    dom.backupRestoreBtn.addEventListener('click', async () => {
+      const confirmed = window.confirm(
+        'Restore latest backup file? This will replace current local data with backup data.'
+      );
+      if (!confirmed) {
+        return;
+      }
+
+      const previousStatus = dom.statusPill.textContent;
+      try {
+        setStatus('Saving backup settings...');
+        await saveBackupSettings({ silentSuccess: true });
+        setStatus('Restoring latest backup...');
+        const result = await invoke('restoreLatestLocalBackup');
+        await reloadData();
+        showToast(`Restored: ${result.fileName}`);
+        setStatus(previousStatus);
+      } catch (error) {
+        setStatus(previousStatus);
+        showToast(error.message, 'error');
+      }
+    });
+  }
+}
+
 function bindLicense() {
   dom.licenseKeyInput.addEventListener('input', () => {
     dom.licenseKeyInput.value = dom.licenseKeyInput.value.replace(/\D/g, '').slice(0, 12);
@@ -711,6 +979,43 @@ function bindLicense() {
 }
 
 function bindProducts() {
+  const suggestPackPrice = () => {
+    if (!dom.productPackEnabled || !dom.productPackEnabled.checked) {
+      return;
+    }
+    const loosePrice = round2(toNumber(dom.productLoosePrice.value, 0));
+    const packSize = Math.max(2, Math.trunc(toNumber(dom.productPackSize.value, 2)));
+    const currentPackPrice = round2(toNumber(dom.productPackPrice.value, 0));
+    if (currentPackPrice > 0) {
+      return;
+    }
+    dom.productPackPrice.value = round2(loosePrice * packSize).toFixed(2);
+  };
+
+  const syncProductPackFields = () => {
+    const enabled = Boolean(dom.productPackEnabled && dom.productPackEnabled.checked);
+    if (!dom.productPackSize || !dom.productPackPrice) {
+      return;
+    }
+
+    dom.productPackSize.disabled = !enabled;
+    dom.productPackPrice.disabled = !enabled;
+    if (!enabled) {
+      dom.productPackSize.value = '1';
+      dom.productPackPrice.value = '0';
+    } else if (toNumber(dom.productPackSize.value, 0) < 2) {
+      dom.productPackSize.value = '2';
+    }
+    suggestPackPrice();
+  };
+
+  if (dom.productPackEnabled) {
+    dom.productPackEnabled.addEventListener('change', syncProductPackFields);
+    dom.productPackSize.addEventListener('input', suggestPackPrice);
+    dom.productLoosePrice.addEventListener('input', suggestPackPrice);
+    syncProductPackFields();
+  }
+
   if (dom.productStockPdfBtn) {
     dom.productStockPdfBtn.addEventListener('click', async () => {
       try {
@@ -743,7 +1048,11 @@ function bindProducts() {
         category: dom.productForm.querySelector('#product-category').value,
         unit: dom.productForm.querySelector('#product-unit').value,
         costPrice: dom.productForm.querySelector('#product-cost-price').value,
-        retailPrice: dom.productForm.querySelector('#product-retail-price').value,
+        retailPrice: dom.productForm.querySelector('#product-loose-price').value,
+        loosePrice: dom.productForm.querySelector('#product-loose-price').value,
+        packEnabled: dom.productPackEnabled.checked,
+        packSize: dom.productForm.querySelector('#product-pack-size').value,
+        packPrice: dom.productForm.querySelector('#product-pack-price').value,
         wholesalePrice: dom.productForm.querySelector('#product-wholesale-price').value,
         wholesaleMinQty: dom.productForm.querySelector('#product-wholesale-min-qty').value,
         stock: dom.productForm.querySelector('#product-stock').value,
@@ -989,6 +1298,42 @@ function bindSuppliers() {
 }
 
 function bindPurchases() {
+  if (dom.openPurchaseSupplierModalBtn) {
+    dom.openPurchaseSupplierModalBtn.addEventListener('click', () => {
+      openPurchaseSupplierModal();
+    });
+  }
+
+  if (dom.openPurchaseProductModalBtn) {
+    dom.openPurchaseProductModalBtn.addEventListener('click', () => {
+      openPurchaseProductModal();
+    });
+  }
+
+  if (dom.purchaseSupplierCancelBtn) {
+    dom.purchaseSupplierCancelBtn.addEventListener('click', () => {
+      closePurchaseSupplierModal();
+    });
+  }
+
+  if (dom.purchaseProductCancelBtn) {
+    dom.purchaseProductCancelBtn.addEventListener('click', () => {
+      closePurchaseProductModal();
+    });
+  }
+
+  if (dom.purchaseSupplierModal) {
+    dom.purchaseSupplierModal.addEventListener('close', () => {
+      dom.purchaseBarcodeInput.focus();
+    });
+  }
+
+  if (dom.purchaseProductModal) {
+    dom.purchaseProductModal.addEventListener('close', () => {
+      dom.purchaseBarcodeInput.focus();
+    });
+  }
+
   dom.purchaseGstEnabled.addEventListener('change', () => {
     dom.purchaseGstRate.disabled = !dom.purchaseGstEnabled.checked;
     if (!dom.purchaseGstEnabled.checked) {
@@ -1213,6 +1558,7 @@ function bindPurchases() {
       }
 
       resetPurchaseSupplierForm();
+      closePurchaseSupplierModal();
       showToast(`Supplier ${supplier.name} saved`);
       setStatus('Ready');
       dom.purchaseNotes.focus();
@@ -1239,6 +1585,7 @@ function bindPurchases() {
         reorderLevel: dom.purchaseProductReorderLevel.value
       });
       resetPurchaseProductForm();
+      closePurchaseProductModal();
 
       showToast(`Product ${product.name} added with stock 0`);
       setStatus('Ready');
@@ -1343,6 +1690,24 @@ function bindExpenses() {
 }
 
 function bindBilling() {
+  if (dom.openBillingCustomerModalBtn) {
+    dom.openBillingCustomerModalBtn.addEventListener('click', () => {
+      openBillingCustomerModal();
+    });
+  }
+
+  if (dom.billingCustomerCancelBtn) {
+    dom.billingCustomerCancelBtn.addEventListener('click', () => {
+      closeBillingCustomerModal();
+    });
+  }
+
+  if (dom.billingCustomerModal) {
+    dom.billingCustomerModal.addEventListener('close', () => {
+      dom.invoiceCustomer.focus();
+    });
+  }
+
   dom.invoiceChannel.addEventListener('change', () => {
     if (dom.invoiceChannel.value === 'retail') {
       state.invoicePaidTouched = false;
@@ -1374,6 +1739,11 @@ function bindBilling() {
 
   dom.addItemBtn.addEventListener('click', () => {
     addSelectedProductToDraft();
+  });
+
+  dom.draftProductId.addEventListener('change', () => {
+    const product = state.products.find((entry) => entry.id === dom.draftProductId.value) || null;
+    renderBillingSaleUnitOptions(product);
   });
 
   dom.billingProductSearch.addEventListener('input', () => {
@@ -1467,8 +1837,19 @@ function bindBilling() {
       return;
     }
 
-    if (nextQty > product.stock) {
-      showToast(`Only ${product.stock} stock available for ${product.name}`, 'error');
+    const nextBaseQty = toBaseQty(product, nextQty, line.saleUnit);
+    const otherBaseQty = round2(
+      state.draftItems.reduce((sum, current, currentIndex) => {
+        if (currentIndex === index || current.productId !== line.productId) {
+          return sum;
+        }
+        return round2(sum + toBaseQty(product, current.qty, current.saleUnit));
+      }, 0)
+    );
+    const totalBaseQty = round2(otherBaseQty + nextBaseQty);
+
+    if (totalBaseQty > product.stock) {
+      showToast(`Only ${product.stock} loose units available for ${product.name}`, 'error');
       renderDraftItems();
       return;
     }
@@ -1500,6 +1881,7 @@ function bindBilling() {
       }
 
       resetBillingCustomerForm();
+      closeBillingCustomerModal();
       showToast(`Customer ${customer.name} saved`);
       setStatus('Ready');
       dom.invoiceCustomer.focus();
@@ -1530,7 +1912,8 @@ function bindBilling() {
       notes: dom.invoiceNotes.value,
       items: state.draftItems.map((item) => ({
         productId: item.productId,
-        qty: item.qty
+        qty: item.qty,
+        saleUnit: normalizeSaleUnit(item.saleUnit)
       }))
     };
 
@@ -1550,11 +1933,193 @@ function bindBilling() {
   });
 }
 
+function openDialog(modal) {
+  if (!modal) {
+    return false;
+  }
+
+  if (typeof modal.showModal === 'function') {
+    if (!modal.open) {
+      modal.showModal();
+    }
+  } else {
+    modal.setAttribute('open', 'open');
+  }
+
+  return true;
+}
+
+function closeDialog(modal) {
+  if (!modal || !modal.open) {
+    return;
+  }
+
+  if (typeof modal.close === 'function') {
+    modal.close();
+  } else {
+    modal.removeAttribute('open');
+  }
+}
+
+function openPurchaseSupplierModal() {
+  resetPurchaseSupplierForm();
+  if (!openDialog(dom.purchaseSupplierModal)) {
+    return;
+  }
+  dom.purchaseSupplierName.focus();
+}
+
+function closePurchaseSupplierModal() {
+  closeDialog(dom.purchaseSupplierModal);
+}
+
+function openPurchaseProductModal() {
+  resetPurchaseProductForm();
+  if (!openDialog(dom.purchaseProductModal)) {
+    return;
+  }
+  dom.purchaseProductName.focus();
+}
+
+function closePurchaseProductModal() {
+  closeDialog(dom.purchaseProductModal);
+}
+
+function openBillingCustomerModal() {
+  resetBillingCustomerForm();
+  if (!openDialog(dom.billingCustomerModal)) {
+    return;
+  }
+  dom.billingCustomerName.focus();
+}
+
+function closeBillingCustomerModal() {
+  closeDialog(dom.billingCustomerModal);
+}
+
+function closeInvoicePaymentModal() {
+  const modal = dom.invoicePaymentModal;
+  if (!modal || !modal.open) {
+    return;
+  }
+
+  if (typeof modal.close === 'function') {
+    modal.close();
+  } else {
+    modal.removeAttribute('open');
+  }
+}
+
+function openInvoicePaymentModal(invoice) {
+  const modal = dom.invoicePaymentModal;
+  if (!modal) {
+    return false;
+  }
+
+  const pending = getInvoicePendingAmount(invoice);
+  dom.invoicePaymentInvoiceId.value = invoice.id;
+  dom.invoicePaymentMeta.textContent = `${invoice.invoiceNo} • ${invoice.customerSnapshot.name} • Pending ${formatMoney(
+    pending
+  )}`;
+  dom.invoicePaymentPending.value = formatMoney(pending);
+  dom.invoicePaymentAmount.value = pending.toFixed(2);
+  dom.invoicePaymentNote.value = '';
+
+  if (typeof modal.showModal === 'function') {
+    if (!modal.open) {
+      modal.showModal();
+    }
+  } else {
+    modal.setAttribute('open', 'open');
+  }
+
+  dom.invoicePaymentAmount.focus();
+  dom.invoicePaymentAmount.select();
+  return true;
+}
+
+async function submitInvoicePayment(invoice, amountInput, noteInput) {
+  if (!invoice) {
+    showToast('Invoice not found', 'error');
+    return false;
+  }
+
+  const maxAmount = getInvoicePendingAmount(invoice);
+  if (maxAmount <= 0) {
+    showToast('Invoice is already fully paid', 'info');
+    return false;
+  }
+
+  const amount = round2(toNumber(amountInput, NaN));
+  if (!Number.isFinite(amount) || amount <= 0) {
+    showToast('Enter a valid payment amount', 'error');
+    return false;
+  }
+
+  if (amount > maxAmount) {
+    showToast('Payment cannot exceed pending balance', 'error');
+    return false;
+  }
+
+  try {
+    setStatus('Recording invoice payment...');
+    const updated = await invoke('recordInvoicePayment', {
+      invoiceId: invoice.id,
+      amount,
+      note: String(noteInput || '').trim()
+    });
+    await reloadData();
+    closeInvoicePaymentModal();
+    const remaining = getInvoicePendingAmount(updated);
+    if (remaining > 0) {
+      showToast(`${updated.invoiceNo} partial payment recorded (${formatMoney(remaining)} pending)`);
+    } else {
+      showToast(`${updated.invoiceNo} payment completed`);
+    }
+    setStatus('Live');
+    return true;
+  } catch (error) {
+    setStatus('Live');
+    showToast(error.message, 'error');
+    return false;
+  }
+}
+
 function bindInvoices() {
   dom.invoiceSearch.addEventListener('input', () => {
     state.invoiceSearch = dom.invoiceSearch.value.trim().toLowerCase();
     renderInvoices();
   });
+
+  if (dom.invoicePaymentModal && dom.invoicePaymentForm) {
+    dom.invoicePaymentCancelBtn.addEventListener('click', () => {
+      closeInvoicePaymentModal();
+    });
+
+    dom.invoicePaymentFullBtn.addEventListener('click', async () => {
+      const invoiceId = dom.invoicePaymentInvoiceId.value;
+      const invoice = state.invoices.find((entry) => entry.id === invoiceId);
+      if (!invoice) {
+        showToast('Invoice not found', 'error');
+        return;
+      }
+
+      await submitInvoicePayment(invoice, getInvoicePendingAmount(invoice), dom.invoicePaymentNote.value);
+    });
+
+    dom.invoicePaymentForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+
+      const invoiceId = dom.invoicePaymentInvoiceId.value;
+      const invoice = state.invoices.find((entry) => entry.id === invoiceId);
+      if (!invoice) {
+        showToast('Invoice not found', 'error');
+        return;
+      }
+
+      await submitInvoicePayment(invoice, dom.invoicePaymentAmount.value, dom.invoicePaymentNote.value);
+    });
+  }
 
   dom.invoicesBody.addEventListener('click', async (event) => {
     const paymentBtn = event.target.closest('button[data-pay-id]');
@@ -1566,9 +2131,13 @@ function bindInvoices() {
         return;
       }
 
-      const maxAmount = round2(toNumber(invoice.balance, 0));
+      const maxAmount = getInvoicePendingAmount(invoice);
       if (maxAmount <= 0) {
-        showToast('Invoice is alLive paid', 'info');
+        showToast('Invoice is already fully paid', 'info');
+        return;
+      }
+
+      if (openInvoicePaymentModal(invoice)) {
         return;
       }
 
@@ -1576,35 +2145,10 @@ function bindInvoices() {
         `Enter payment amount for ${invoice.invoiceNo} (Pending: ${formatMoney(maxAmount)})`,
         String(maxAmount)
       );
-
       if (promptValue === null) {
         return;
       }
-
-      const amount = round2(toNumber(promptValue, NaN));
-      if (!Number.isFinite(amount) || amount <= 0) {
-        showToast('Enter a valid payment amount', 'error');
-        return;
-      }
-
-      if (amount > maxAmount) {
-        showToast('Payment cannot exceed pending balance', 'error');
-        return;
-      }
-
-      try {
-        setStatus('Recording invoice payment...');
-        const updated = await invoke('recordInvoicePayment', {
-          invoiceId,
-          amount
-        });
-        await reloadData();
-        showToast(`${updated.invoiceNo} payment updated`);
-        setStatus('Live');
-      } catch (error) {
-        setStatus('Live');
-        showToast(error.message, 'error');
-      }
+      await submitInvoicePayment(invoice, promptValue, '');
       return;
     }
 
@@ -1647,16 +2191,16 @@ function bindInvoices() {
 
 function bindReports() {
   dom.reportRefreshBtn.addEventListener('click', async () => {
-    await loadPnlReport(dom.reportDate.value, dom.reportPeriod.value);
+    await loadReports(dom.reportDate.value, dom.reportPeriod.value);
   });
 
   dom.reportDate.addEventListener('change', async () => {
-    await loadPnlReport(dom.reportDate.value, dom.reportPeriod.value);
+    await loadReports(dom.reportDate.value, dom.reportPeriod.value);
   });
 
   dom.reportPeriod.addEventListener('change', async () => {
     state.reportPeriod = normalizeReportPeriod(dom.reportPeriod.value);
-    await loadPnlReport(dom.reportDate.value, state.reportPeriod);
+    await loadReports(dom.reportDate.value, state.reportPeriod);
   });
 }
 
@@ -1701,6 +2245,11 @@ function resetProductForm() {
   dom.productForm.querySelector('#product-sku').value = '';
   setSelectValueWithFallback(dom.productForm.querySelector('#product-category'), 'General');
   setSelectValueWithFallback(dom.productForm.querySelector('#product-unit'), 'Unit');
+  dom.productPackEnabled.checked = false;
+  dom.productPackSize.value = '1';
+  dom.productPackPrice.value = '0';
+  dom.productPackSize.disabled = true;
+  dom.productPackPrice.disabled = true;
   dom.productSaveBtn.textContent = 'Save Product';
 }
 
@@ -2098,6 +2647,7 @@ function resetBillingCustomerForm() {
 }
 
 function fillProductForm(product) {
+  const packConfig = getProductPackConfig(product);
   dom.productForm.querySelector('#product-id').value = product.id;
   dom.productForm.querySelector('#product-sku').value = product.sku;
   dom.productForm.querySelector('#product-barcode').value = product.barcode || '';
@@ -2105,7 +2655,12 @@ function fillProductForm(product) {
   setSelectValueWithFallback(dom.productForm.querySelector('#product-category'), product.category);
   setSelectValueWithFallback(dom.productForm.querySelector('#product-unit'), product.unit);
   dom.productForm.querySelector('#product-cost-price').value = product.costPrice;
-  dom.productForm.querySelector('#product-retail-price').value = product.retailPrice;
+  dom.productForm.querySelector('#product-loose-price').value = packConfig.loosePrice;
+  dom.productPackEnabled.checked = packConfig.packEnabled;
+  dom.productForm.querySelector('#product-pack-size').value = packConfig.packSize;
+  dom.productForm.querySelector('#product-pack-price').value = packConfig.packEnabled ? packConfig.packPrice : 0;
+  dom.productPackSize.disabled = !packConfig.packEnabled;
+  dom.productPackPrice.disabled = !packConfig.packEnabled;
   dom.productForm.querySelector('#product-wholesale-price').value = product.wholesalePrice;
   dom.productForm.querySelector('#product-wholesale-min-qty').value = product.wholesaleMinQty;
   dom.productForm.querySelector('#product-stock').value = product.stock;
@@ -2158,6 +2713,25 @@ function renderBusiness() {
   dom.businessAddress.value = business.address || '';
   dom.businessInvoicePrefix.value = invoicePrefixPreview(business.name || '');
   dom.brandShopName.textContent = business.name || 'Grocery Offline ERP';
+}
+
+function renderBackupSettings() {
+  if (!dom.backupForm) {
+    return;
+  }
+
+  const backup = normalizeBackupSettingsForUi(state.backup);
+  dom.backupEnabled.checked = backup.enabled;
+  dom.backupAutoEnabled.checked = backup.autoBackupEnabled;
+  dom.backupAutoInterval.value = String(backup.autoBackupIntervalHours);
+  dom.backupFolderPath.value = backup.folderPath || '';
+
+  const backupText = `Backup: ${backupStatusLabel(backup.lastBackupStatus, backup.lastBackupAt)}`;
+  const restoreText = `Restore: ${backupStatusLabel(backup.lastRestoreStatus, backup.lastRestoreAt)}`;
+  dom.backupStatus.value = `${backupText} | ${restoreText}`;
+  dom.backupLastFile.value = backup.lastBackupFileName || backup.lastRestoreFileName || '-';
+  dom.backupLastError.value = backup.lastBackupError || backup.lastRestoreError || '';
+  updateBackupFormState();
 }
 
 function renderUiSettings() {
@@ -2300,21 +2874,30 @@ function renderProducts() {
 
   dom.productBody.innerHTML = state.products
     .map(
-      (product) => `
+      (product) => {
+        const packConfig = getProductPackConfig(product);
+        const retailText = packConfig.packEnabled
+          ? `${formatMoney(packConfig.loosePrice)} / loose <br /><span class="muted">${formatMoney(
+              packConfig.packPrice
+            )} / pack (${packConfig.packSize})</span>`
+          : formatMoney(packConfig.loosePrice);
+
+        return `
         <tr>
           <td>${product.name}</td>
           <td>${product.sku}</td>
           <td>${product.barcode || '-'}</td>
-          <td>${product.stock}</td>
+          <td>${product.stock} ${packConfig.looseUnit}</td>
           <td>${formatMoney(product.costPrice)}</td>
-          <td>${formatMoney(product.retailPrice)}</td>
+          <td>${retailText}</td>
           <td>${formatMoney(product.wholesalePrice)} / min ${product.wholesaleMinQty}</td>
           <td>
             <button class="btn small ghost" data-action="edit" data-id="${product.id}">Edit</button>
             <button class="btn small warn" data-action="delete" data-id="${product.id}">Delete</button>
           </td>
         </tr>
-      `
+      `;
+      }
     )
     .join('');
 }
@@ -2800,16 +3383,24 @@ function renderBillingProductOptions() {
     dom.draftProductId.innerHTML = search
       ? '<option value="">No matching product</option>'
       : '<option value="">No stock available</option>';
+    renderBillingSaleUnitOptions(null);
     return;
   }
 
   dom.draftProductId.innerHTML = productsWithStock
     .map(
-      (product) => `
+      (product) => {
+        const config = getProductPackConfig(product);
+        const stockText = config.packEnabled
+          ? `${product.stock} ${config.looseUnit} (~${round2(product.stock / config.packSize)} pack)`
+          : `${product.stock}`;
+
+        return `
         <option value="${product.id}">
-          ${product.name} (${product.sku}) - stock ${product.stock}
+          ${product.name} (${product.sku}) - stock ${stockText}
         </option>
-      `
+      `;
+      }
     )
     .join('');
 
@@ -2818,6 +3409,35 @@ function renderBillingProductOptions() {
   } else {
     dom.draftProductId.value = productsWithStock[0].id;
   }
+
+  const activeProduct = state.products.find((product) => product.id === dom.draftProductId.value) || null;
+  renderBillingSaleUnitOptions(activeProduct);
+}
+
+function renderBillingSaleUnitOptions(product) {
+  if (!dom.draftSaleUnit) {
+    return;
+  }
+
+  const selectedMode = normalizeSaleUnit(dom.draftSaleUnit.value);
+  if (!product) {
+    dom.draftSaleUnit.innerHTML = '<option value="loose">Loose</option>';
+    dom.draftSaleUnit.value = 'loose';
+    return;
+  }
+
+  const config = getProductPackConfig(product);
+  const options = [
+    `<option value="loose">Loose (${config.looseUnit})</option>`
+  ];
+  if (config.packEnabled) {
+    options.push(
+      `<option value="pack">Pack (1 = ${config.packSize} ${config.looseUnit})</option>`
+    );
+  }
+
+  dom.draftSaleUnit.innerHTML = options.join('');
+  dom.draftSaleUnit.value = config.packEnabled && selectedMode === 'pack' ? 'pack' : 'loose';
 }
 
 function renderBillingCustomerOptions() {
@@ -2849,19 +3469,38 @@ function renderBillingCustomerOptions() {
   }
 }
 
-function getUnitPrice(product, channel, qty) {
-  if (channel === 'wholesale') {
-    if (qty >= product.wholesaleMinQty) {
-      return { unitPrice: product.wholesalePrice, mode: 'wholesale' };
-    }
+function getUnitPrice(product, channel, qty, saleUnit) {
+  const config = getProductPackConfig(product);
+  const unitMode = normalizeSaleUnit(saleUnit);
+  const usePack = unitMode === 'pack' && config.packEnabled;
+  const baseQty = round2(usePack ? qty * config.packSize : qty);
 
-    return { unitPrice: product.retailPrice, mode: 'retail-fallback' };
+  if (channel === 'wholesale') {
+    const perLoosePrice =
+      baseQty >= product.wholesaleMinQty ? product.wholesalePrice : config.loosePrice;
+    return {
+      unitPrice: usePack ? round2(perLoosePrice * config.packSize) : perLoosePrice,
+      mode: baseQty >= product.wholesaleMinQty ? 'wholesale' : 'retail-fallback',
+      saleUnit: usePack ? 'pack' : 'loose',
+      unitLabel: getDisplayUnit(product, usePack ? 'pack' : 'loose'),
+      baseQty,
+      packSize: config.packSize,
+      looseUnit: config.looseUnit
+    };
   }
 
-  return { unitPrice: product.retailPrice, mode: 'retail' };
+  return {
+    unitPrice: usePack ? config.packPrice : config.loosePrice,
+    mode: usePack ? 'retail-pack' : 'retail-loose',
+    saleUnit: usePack ? 'pack' : 'loose',
+    unitLabel: getDisplayUnit(product, usePack ? 'pack' : 'loose'),
+    baseQty,
+    packSize: config.packSize,
+    looseUnit: config.looseUnit
+  };
 }
 
-function addDraftItem(productId, qty) {
+function addDraftItem(productId, qty, saleUnit = 'loose') {
   const product = state.products.find((entry) => entry.id === productId);
   if (!product) {
     showToast('Invalid product selected', 'error');
@@ -2869,23 +3508,38 @@ function addDraftItem(productId, qty) {
   }
 
   const cleanQty = round2(toNumber(qty, NaN));
+  const packConfig = getProductPackConfig(product);
+  const cleanSaleUnit =
+    normalizeSaleUnit(saleUnit) === 'pack' && packConfig.packEnabled ? 'pack' : 'loose';
   if (!Number.isFinite(cleanQty) || cleanQty <= 0) {
     showToast('Quantity must be greater than 0', 'error');
     return false;
   }
 
-  const existing = state.draftItems.find((item) => item.productId === productId);
-  const totalQty = existing ? round2(existing.qty + cleanQty) : cleanQty;
+  const additionalBaseQty = toBaseQty(product, cleanQty, cleanSaleUnit);
+  const currentBaseQty = round2(
+    state.draftItems.reduce((sum, item) => {
+      if (item.productId !== productId) {
+        return sum;
+      }
+      return round2(sum + toBaseQty(product, item.qty, item.saleUnit));
+    }, 0)
+  );
+  const totalBaseQty = round2(currentBaseQty + additionalBaseQty);
 
-  if (totalQty > product.stock) {
-    showToast(`Only ${product.stock} stock available for ${product.name}`, 'error');
+  if (totalBaseQty > product.stock) {
+    showToast(`Only ${product.stock} loose units available for ${product.name}`, 'error');
     return false;
   }
 
+  const existing = state.draftItems.find(
+    (item) => item.productId === productId && normalizeSaleUnit(item.saleUnit) === cleanSaleUnit
+  );
+
   if (existing) {
-    existing.qty = totalQty;
+    existing.qty = round2(existing.qty + cleanQty);
   } else {
-    state.draftItems.push({ productId, qty: cleanQty });
+    state.draftItems.push({ productId, qty: cleanQty, saleUnit: cleanSaleUnit });
   }
 
   renderDraftItems();
@@ -2894,6 +3548,7 @@ function addDraftItem(productId, qty) {
 
 function addSelectedProductToDraft() {
   const productId = dom.draftProductId.value;
+  const saleUnit = normalizeSaleUnit(dom.draftSaleUnit.value);
   const qty = dom.draftQty.value;
 
   if (!productId) {
@@ -2901,7 +3556,7 @@ function addSelectedProductToDraft() {
     return;
   }
 
-  const added = addDraftItem(productId, qty);
+  const added = addDraftItem(productId, qty, saleUnit);
   if (added) {
     dom.draftQty.value = '1';
     dom.barcodeInput.focus();
@@ -2918,12 +3573,17 @@ function resolveDraftLines() {
         return null;
       }
 
-      const pricing = getUnitPrice(product, channel, item.qty);
+      const pricing = getUnitPrice(product, channel, item.qty, item.saleUnit);
       const lineTotal = round2(pricing.unitPrice * item.qty);
 
       return {
         product,
         qty: item.qty,
+        saleUnit: pricing.saleUnit,
+        unitLabel: pricing.unitLabel,
+        baseQty: pricing.baseQty,
+        packSize: pricing.packSize,
+        looseUnit: pricing.looseUnit,
         unitPrice: pricing.unitPrice,
         lineTotal,
         mode: pricing.mode
@@ -2970,9 +3630,11 @@ function renderDraftItems() {
         <tr>
           <td>
             <strong>${line.product.name}</strong>
-            <div class="muted">${line.product.sku} ${
-              line.mode === 'retail-fallback' ? '(Retail rate: min wholesale qty not met)' : ''
-            }</div>
+            <div class="muted">
+              ${line.product.sku} • ${line.qty} ${line.unitLabel} (base ${line.baseQty} ${line.looseUnit})${
+                line.mode === 'retail-fallback' ? ' • Retail rate: min wholesale qty not met' : ''
+              }
+            </div>
           </td>
           <td><input data-qty-index="${index}" type="number" min="0.01" step="0.01" value="${line.qty}" /></td>
           <td>${formatMoney(line.unitPrice)}</td>
@@ -3001,9 +3663,11 @@ function clearInvoiceDraft() {
   state.billingProductSearch = '';
   dom.billingProductSearch.value = '';
   dom.draftQty.value = '1';
+  dom.draftSaleUnit.value = 'loose';
   dom.barcodeInput.value = '';
 
   renderBillingCustomerOptions();
+  renderBillingProductOptions();
   resetBillingCustomerForm();
   renderDraftItems();
 }
@@ -3027,6 +3691,7 @@ function renderInvoices() {
   dom.invoicesBody.innerHTML = invoices
     .map((invoice) => {
       const paymentStatus = getInvoicePaymentStatus(invoice);
+      const pendingAmount = getInvoicePendingAmount(invoice);
       const paymentLabel =
         paymentStatus === 'paid'
           ? 'Paid'
@@ -3034,7 +3699,7 @@ function renderInvoices() {
             ? 'Partial'
             : 'Unpaid';
 
-      const receiveDisabled = round2(toNumber(invoice.balance, 0)) <= 0 ? 'disabled' : '';
+      const receiveDisabled = pendingAmount <= 0 ? 'disabled' : '';
 
       return `
         <tr>
@@ -3043,7 +3708,7 @@ function renderInvoices() {
           <td><span class="tag ${invoice.channel}">${invoice.channel}</span></td>
           <td>${invoice.customerSnapshot.name}</td>
           <td>${formatMoney(invoice.total)}</td>
-          <td>${formatMoney(invoice.balance)}</td>
+          <td>${formatMoney(pendingAmount)}</td>
           <td><span class="tag payment-${paymentStatus}">${paymentLabel}</span></td>
           <td>${invoice.gstEnabled ? `${invoice.gstRate}%` : 'No GST'}</td>
           <td>
@@ -3077,13 +3742,43 @@ async function loadPnlReport(inputDate, inputPeriod, silent = false) {
     if (dom.reportDate.value !== normalizedDate) {
       dom.reportDate.value = normalizedDate;
     }
-
-    renderReports();
+    return true;
   } catch (error) {
     if (!silent) {
       showToast(error.message, 'error');
     }
+    return false;
   }
+}
+
+async function loadTrialBalanceReport(inputDate, inputPeriod, silent = false) {
+  try {
+    const dateKey = inputDate || dom.reportDate.value || todayKey();
+    const period = normalizeReportPeriod(inputPeriod || state.reportPeriod || dom.reportPeriod.value);
+    const report = await invoke('getTrialBalance', {
+      inputDate: dateKey,
+      period
+    });
+
+    state.trialBalanceReport = report;
+    return true;
+  } catch (error) {
+    if (!silent) {
+      showToast(error.message, 'error');
+    }
+    return false;
+  }
+}
+
+async function loadReports(inputDate, inputPeriod, silent = false) {
+  const results = await Promise.all([
+    loadPnlReport(inputDate, inputPeriod, true),
+    loadTrialBalanceReport(inputDate, inputPeriod, true)
+  ]);
+  if (!silent && !results.some(Boolean)) {
+    showToast('Unable to load reports', 'error');
+  }
+  renderReports();
 }
 
 function renderReports() {
@@ -3158,22 +3853,67 @@ function renderReports() {
 
   if (!history.length) {
     dom.pnlHistoryBody.innerHTML = '<tr><td colspan="9" class="empty">No report data</td></tr>';
+  } else {
+    dom.pnlHistoryBody.innerHTML = history
+      .map(
+        (row) => `
+          <tr>
+            <td>${row.label || row.date || '-'}</td>
+            <td>${formatMoney(row.netSales)}</td>
+            <td>${formatMoney(row.cogs)}</td>
+            <td>${formatMoney(row.grossProfit)}</td>
+            <td>${formatMoney(row.purchaseTotal)}</td>
+            <td>${formatMoney(row.expenseTotal)}</td>
+            <td>${formatMoney(row.cashIn)}</td>
+            <td>${formatMoney(row.cashOut)}</td>
+            <td>${formatMoney(row.netCashflow)}</td>
+          </tr>
+        `
+      )
+      .join('');
+  }
+
+  renderTrialBalance();
+}
+
+function renderTrialBalance() {
+  const report = state.trialBalanceReport || {
+    periodLabel: '-',
+    asOf: '-',
+    rows: [],
+    totals: {
+      debit: 0,
+      credit: 0,
+      difference: 0
+    },
+    isBalanced: true
+  };
+
+  const asOfText = report.asOf ? `as of ${report.asOf}` : 'as of -';
+  dom.trialBalanceTitle.textContent = `Trial Balance (${report.periodLabel || '-'}, ${asOfText})`;
+  dom.trialBalanceStatus.textContent = report.isBalanced
+    ? 'Balanced'
+    : `Not balanced (Difference ${formatMoney(report.totals && report.totals.difference)})`;
+  dom.trialBalanceStatus.classList.toggle('trial-unbalanced', !report.isBalanced);
+
+  const totals = report.totals || { debit: 0, credit: 0, difference: 0 };
+  dom.trialBalanceDebitTotal.textContent = formatMoney(totals.debit || 0);
+  dom.trialBalanceCreditTotal.textContent = formatMoney(totals.credit || 0);
+  dom.trialBalanceDiffTotal.textContent = formatMoney(totals.difference || 0);
+
+  const rows = Array.isArray(report.rows) ? report.rows : [];
+  if (!rows.length) {
+    dom.trialBalanceBody.innerHTML = '<tr><td colspan="3" class="empty">No trial balance data</td></tr>';
     return;
   }
 
-  dom.pnlHistoryBody.innerHTML = history
+  dom.trialBalanceBody.innerHTML = rows
     .map(
       (row) => `
         <tr>
-          <td>${row.label || row.date || '-'}</td>
-          <td>${formatMoney(row.netSales)}</td>
-          <td>${formatMoney(row.cogs)}</td>
-          <td>${formatMoney(row.grossProfit)}</td>
-          <td>${formatMoney(row.purchaseTotal)}</td>
-          <td>${formatMoney(row.expenseTotal)}</td>
-          <td>${formatMoney(row.cashIn)}</td>
-          <td>${formatMoney(row.cashOut)}</td>
-          <td>${formatMoney(row.netCashflow)}</td>
+          <td>${row.account}</td>
+          <td>${formatMoney(row.debit || 0)}</td>
+          <td>${formatMoney(row.credit || 0)}</td>
         </tr>
       `
     )
@@ -3184,6 +3924,7 @@ function renderAll() {
   renderUiSettings();
   renderDashboard();
   renderBusiness();
+  renderBackupSettings();
   renderProducts();
   renderCustomers();
   renderCustomerOptions();
@@ -3212,6 +3953,7 @@ async function reloadData() {
   state.expenses = bootstrap.expenses || [];
   state.dashboard = bootstrap.dashboard || null;
   state.business = bootstrap.business || null;
+  state.backup = bootstrap.backup || null;
   state.licenseStatus = bootstrap.licenseStatus || null;
   state.uiSettings = bootstrap.uiSettings || { themeMode: 'auto' };
 
@@ -3232,7 +3974,7 @@ async function reloadData() {
   renderAll();
   await loadCustomerLedger(true);
   await loadSupplierLedger(true);
-  await loadPnlReport(dom.reportDate.value || todayKey(), state.reportPeriod, true);
+  await loadReports(dom.reportDate.value || todayKey(), state.reportPeriod, true);
 }
 
 async function initializeApp() {
@@ -3244,6 +3986,7 @@ async function initializeApp() {
   bindSidebarShortcuts();
   bindThemeMode();
   bindBusiness();
+  bindBackup();
   bindProducts();
   bindCustomers();
   bindSuppliers();
