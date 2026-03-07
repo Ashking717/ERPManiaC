@@ -23,7 +23,45 @@ function formatDate(value) {
   });
 }
 
-function renderInvoiceHtml({ invoice, business }) {
+function paymentModeLabel(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (text === 'cash') {
+    return 'Cash';
+  }
+  if (text === 'bank') {
+    return 'Bank';
+  }
+  if (text === 'upi') {
+    return 'UPI';
+  }
+  if (text === 'card') {
+    return 'Card';
+  }
+  if (text === 'other') {
+    return 'Other';
+  }
+  return 'Cash';
+}
+
+function normalizeBusinessLogoDataUrl(value) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return '';
+  }
+
+  if (!/^data:image\//i.test(text)) {
+    return '';
+  }
+
+  if (text.length > 2800000) {
+    return '';
+  }
+
+  return text;
+}
+
+function renderA4InvoiceHtml({ invoice, business }) {
+  const storeLogoDataUrl = normalizeBusinessLogoDataUrl(business && business.logoDataUrl);
   const itemRows = invoice.items
     .map(
       (item, index) => `
@@ -62,8 +100,8 @@ function renderInvoiceHtml({ invoice, business }) {
     body {
       margin: 0;
       padding: 28px;
-      background: #f5f5ef;
-      color: #18271f;
+      background: #ffffff;
+      color: #111111;
     }
 
     .sheet {
@@ -71,7 +109,7 @@ function renderInvoiceHtml({ invoice, business }) {
       margin: 0 auto;
       padding: 26px;
       background: #ffffff;
-      border: 1px solid #d7e0d2;
+      border: 1px solid #bbbbbb;
       border-radius: 12px;
     }
 
@@ -85,7 +123,7 @@ function renderInvoiceHtml({ invoice, business }) {
     h1 {
       margin: 0;
       font-size: 28px;
-      color: #2d4e39;
+      color: #111111;
       letter-spacing: 0.06em;
       text-transform: uppercase;
     }
@@ -93,9 +131,18 @@ function renderInvoiceHtml({ invoice, business }) {
     h2 {
       margin: 0 0 6px;
       font-size: 16px;
-      color: #324837;
+      color: #111111;
       text-transform: uppercase;
       letter-spacing: 0.05em;
+    }
+
+    .store-logo {
+      max-width: 150px;
+      max-height: 82px;
+      object-fit: contain;
+      display: block;
+      margin: 0 0 8px auto;
+      filter: grayscale(1) contrast(1.8) brightness(0.55);
     }
 
     p {
@@ -112,15 +159,15 @@ function renderInvoiceHtml({ invoice, business }) {
 
     th,
     td {
-      border: 1px solid #dce5d6;
+      border: 1px solid #c9c9c9;
       padding: 9px;
       text-align: left;
       font-size: 12px;
     }
 
     thead th {
-      background: #ecf3e9;
-      color: #284736;
+      background: #f2f2f2;
+      color: #111111;
       text-transform: uppercase;
       letter-spacing: 0.04em;
       font-size: 11px;
@@ -132,7 +179,7 @@ function renderInvoiceHtml({ invoice, business }) {
     }
 
     .item-meta {
-      color: #596c60;
+      color: #444444;
       font-size: 11px;
     }
 
@@ -148,23 +195,23 @@ function renderInvoiceHtml({ invoice, business }) {
     }
 
     .totals td:first-child {
-      background: #f6f9f4;
+      background: #f5f5f5;
       width: 52%;
     }
 
     .totals tr.total td {
       font-size: 14px;
       font-weight: 700;
-      background: #f1f7ed;
-      color: #1f5037;
+      background: #efefef;
+      color: #111111;
     }
 
     .footer {
       margin-top: 22px;
-      border-top: 1px dashed #bfd0bc;
+      border-top: 1px dashed #999999;
       padding-top: 12px;
       font-size: 12px;
-      color: #4a5f53;
+      color: #333333;
     }
 
     @media print {
@@ -191,6 +238,7 @@ function renderInvoiceHtml({ invoice, business }) {
         <p><strong>Type:</strong> ${escapeHtml(invoice.channel.toUpperCase())}</p>
       </div>
       <div>
+        ${storeLogoDataUrl ? `<img class="store-logo" src="${escapeHtml(storeLogoDataUrl)}" alt="Store Logo" />` : ''}
         <h2>${escapeHtml(business.name || 'Grocery Store')}</h2>
         <p>${escapeHtml(business.address || '')}</p>
         <p><strong>Phone:</strong> ${escapeHtml(business.phone || '-')}</p>
@@ -209,6 +257,7 @@ function renderInvoiceHtml({ invoice, business }) {
       <div>
         <h2>Payment</h2>
         <p><strong>Paid:</strong> ${money(invoice.paidAmount)}</p>
+        <p><strong>Paid Via:</strong> ${escapeHtml(paymentModeLabel(invoice.paidMethod))}</p>
         <p><strong>Balance:</strong> ${money(invoice.balance)}</p>
         <p><strong>Change:</strong> ${money(invoice.change)}</p>
       </div>
@@ -258,6 +307,207 @@ function renderInvoiceHtml({ invoice, business }) {
   </main>
 </body>
 </html>`;
+}
+
+function renderThermalInvoiceHtml({ invoice, business }) {
+  const storeLogoDataUrl = normalizeBusinessLogoDataUrl(business && business.logoDataUrl);
+  const itemRows = invoice.items
+    .map(
+      (item) => `
+        <tr>
+          <td class="item">${escapeHtml(item.name)}</td>
+          <td class="num">${item.qty}</td>
+          <td class="num">${money(item.unitPrice)}</td>
+          <td class="num">${money(item.lineTotal)}</td>
+        </tr>
+      `
+    )
+    .join('');
+
+  const gstLabel = invoice.gstEnabled ? `GST ${invoice.gstRate.toFixed(2)}%` : 'GST';
+  const customerName = escapeHtml((invoice.customerSnapshot && invoice.customerSnapshot.name) || 'Walk-in');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>${escapeHtml(invoice.invoiceNo)} Receipt</title>
+  <style>
+    @page {
+      size: 80mm auto;
+      margin: 3mm;
+    }
+
+    * {
+      box-sizing: border-box;
+      font-family: "Courier New", monospace;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      background: #fff;
+      color: #111;
+      font-size: 11px;
+      line-height: 1.3;
+    }
+
+    .receipt {
+      width: 74mm;
+      margin: 0 auto;
+      padding: 2mm 1mm;
+    }
+
+    .center {
+      text-align: center;
+    }
+
+    .store-name {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 1px;
+      text-transform: uppercase;
+    }
+
+    .thermal-logo {
+      max-width: 43mm;
+      max-height: 18mm;
+      object-fit: contain;
+      display: block;
+      margin: 0 auto 3px;
+      filter: grayscale(1) contrast(1.9) brightness(0.5);
+    }
+
+    .muted {
+      color: #333;
+      font-size: 10px;
+    }
+
+    .line {
+      border-top: 1px dashed #222;
+      margin: 6px 0;
+    }
+
+    .meta-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 1px 0;
+    }
+
+    .meta-label {
+      color: #333;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 4px;
+    }
+
+    th,
+    td {
+      padding: 2px 0;
+      font-size: 10px;
+      vertical-align: top;
+    }
+
+    th {
+      border-bottom: 1px solid #111;
+      text-align: left;
+    }
+
+    .item {
+      width: 46%;
+      padding-right: 3px;
+      word-break: break-word;
+    }
+
+    .num {
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .totals {
+      margin-top: 4px;
+    }
+
+    .totals .meta-row {
+      margin: 2px 0;
+    }
+
+    .totals .meta-row strong {
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <main class="receipt">
+    <section class="center">
+      ${storeLogoDataUrl ? `<img class="thermal-logo" src="${escapeHtml(storeLogoDataUrl)}" alt="Store Logo" />` : ''}
+      <div class="store-name">${escapeHtml(business.name || 'Grocery Store')}</div>
+      <div class="muted">${escapeHtml(business.address || '-')}</div>
+      <div class="muted">Phone: ${escapeHtml(business.phone || '-')}</div>
+      <div class="muted">GSTIN: ${escapeHtml(business.gstin || '-')}</div>
+    </section>
+
+    <div class="line"></div>
+
+    <section>
+      <div class="meta-row"><span class="meta-label">Invoice</span><span>${escapeHtml(invoice.invoiceNo)}</span></div>
+      <div class="meta-row"><span class="meta-label">Date</span><span>${escapeHtml(formatDate(invoice.createdAt))}</span></div>
+      <div class="meta-row"><span class="meta-label">Type</span><span>${escapeHtml(invoice.channel.toUpperCase())}</span></div>
+      <div class="meta-row"><span class="meta-label">Customer</span><span>${customerName}</span></div>
+    </section>
+
+    <div class="line"></div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Item</th>
+          <th class="num">Qty</th>
+          <th class="num">Rate</th>
+          <th class="num">Amt</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${itemRows}
+      </tbody>
+    </table>
+
+    <div class="line"></div>
+
+    <section class="totals">
+      <div class="meta-row"><span>Sub Total</span><span>${money(invoice.subtotal)}</span></div>
+      <div class="meta-row"><span>Discount</span><span>${money(invoice.discount)}</span></div>
+      <div class="meta-row"><span>${gstLabel}</span><span>${money(invoice.gstAmount)}</span></div>
+      <div class="meta-row"><strong>Net Total</strong><strong>${money(invoice.total)}</strong></div>
+      <div class="meta-row"><span>Paid (${escapeHtml(paymentModeLabel(invoice.paidMethod))})</span><span>${money(invoice.paidAmount)}</span></div>
+      <div class="meta-row"><span>Balance</span><span>${money(invoice.balance)}</span></div>
+    </section>
+
+    <div class="line"></div>
+
+    <section class="center muted">
+      <div>${escapeHtml(invoice.notes || 'Thank you for your purchase')}</div>
+      <div>Computer Generated Invoice</div>
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
+function renderInvoiceHtml(payload, options = {}) {
+  const mode = String(options && options.mode ? options.mode : 'a4')
+    .trim()
+    .toLowerCase();
+
+  if (mode === 'thermal') {
+    return renderThermalInvoiceHtml(payload);
+  }
+
+  return renderA4InvoiceHtml(payload);
 }
 
 module.exports = {

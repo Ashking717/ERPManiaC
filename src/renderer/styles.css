@@ -394,6 +394,36 @@ textarea:focus {
   padding-top: 4px;
 }
 
+.logo-preview-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  background: #f7efe0;
+}
+
+#business-logo-preview {
+  width: 124px;
+  height: 74px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: #fff;
+  object-fit: contain;
+  display: none;
+  filter: grayscale(1) contrast(1.75) brightness(0.55);
+}
+
+#business-logo-preview.show {
+  display: block;
+}
+
+#business-logo-empty {
+  margin: 0;
+}
+
 .btn {
   border: 1px solid transparent;
   border-radius: 10px;
@@ -510,6 +540,10 @@ textarea:focus {
 
 .quick-row.four-col {
   grid-template-columns: minmax(180px, 1fr) 100px 120px 130px;
+}
+
+.supplier-payment-row {
+  grid-template-columns: minmax(160px, 220px) minmax(140px, 180px) minmax(0, 1fr) 130px;
 }
 
 .purchase-add-row {

@@ -13,6 +13,7 @@ const OCR_LANGUAGE = 'eng';
 const OCR_LANG_BASENAME = `${OCR_LANGUAGE}.traineddata`;
 const OCR_LANG_GZIP_BASENAME = `${OCR_LANG_BASENAME}.gz`;
 const BACKUP_ROLLING_FILE_NAME = 'ERPManiaC-Backup-Latest.json';
+const MAX_BUSINESS_LOGO_DATA_URL_LENGTH = 2800000;
 
 function assert(condition, message) {
   if (!condition) {
@@ -49,6 +50,40 @@ function normalizeChannel(channel) {
   return channel === 'wholesale' ? 'wholesale' : 'retail';
 }
 
+function normalizePaymentMethod(value) {
+  const text = toText(value).toLowerCase();
+  if (text === 'cash' || text === 'bank' || text === 'upi' || text === 'card' || text === 'other') {
+    return text;
+  }
+
+  if (text === 'digital' || text === 'online' || text === 'bank_transfer' || text === 'bank transfer') {
+    return 'bank';
+  }
+
+  return 'cash';
+}
+
+function paymentAccountForMethod(value) {
+  return normalizePaymentMethod(value) === 'cash' ? 'Cash in Hand' : 'Bank / Digital';
+}
+
+function paymentMethodLabel(value) {
+  const method = normalizePaymentMethod(value);
+  if (method === 'cash') {
+    return 'Cash';
+  }
+  if (method === 'bank') {
+    return 'Bank';
+  }
+  if (method === 'upi') {
+    return 'UPI';
+  }
+  if (method === 'card') {
+    return 'Card';
+  }
+  return 'Other';
+}
+
 function normalizeThemeMode(value) {
   const mode = toText(value).toLowerCase();
   if (mode === 'light' || mode === 'dark' || mode === 'auto') {
@@ -56,6 +91,27 @@ function normalizeThemeMode(value) {
   }
 
   return 'auto';
+}
+
+function normalizeThermalPrinterName(value) {
+  return toText(value);
+}
+
+function normalizeBusinessLogoDataUrl(value) {
+  const text = toText(value);
+  if (!text) {
+    return '';
+  }
+
+  if (!/^data:image\//i.test(text)) {
+    return '';
+  }
+
+  if (text.length > MAX_BUSINESS_LOGO_DATA_URL_LENGTH) {
+    return '';
+  }
+
+  return text;
 }
 
 function normalizeIsoOrNull(value) {
@@ -1390,24 +1446,46 @@ function createErpService() {
       dashboard: buildDashboard(data),
       business: clone(data.meta.business),
       backup: normalizeBackupSettings(data.meta.backup),
-      uiSettings: clone(data.meta.uiSettings || { themeMode: 'auto' }),
+      uiSettings: clone(
+        data.meta.uiSettings || {
+          themeMode: 'auto',
+          thermalAutoPrintEnabled: false,
+          thermalPrinterName: ''
+        }
+      ),
       licenseStatus: deriveLicenseStatus(data.meta.license)
     };
   }
 
   function upsertUiSettings(payload) {
-    const themeMode = normalizeThemeMode(payload && payload.themeMode);
+    const input = payload && typeof payload === 'object' ? payload : {};
+    const hasThemeMode = Object.prototype.hasOwnProperty.call(input, 'themeMode');
+    const hasThermalEnabled = Object.prototype.hasOwnProperty.call(
+      input,
+      'thermalAutoPrintEnabled'
+    );
+    const hasThermalPrinterName = Object.prototype.hasOwnProperty.call(input, 'thermalPrinterName');
     let persisted;
 
     store.mutate((data) => {
       const current =
         data.meta.uiSettings && typeof data.meta.uiSettings === 'object'
           ? data.meta.uiSettings
-          : { themeMode: 'auto' };
+          : {
+              themeMode: 'auto',
+              thermalAutoPrintEnabled: false,
+              thermalPrinterName: ''
+            };
 
       data.meta.uiSettings = {
         ...current,
-        themeMode
+        themeMode: hasThemeMode ? normalizeThemeMode(input.themeMode) : normalizeThemeMode(current.themeMode),
+        thermalAutoPrintEnabled: hasThermalEnabled
+          ? Boolean(input.thermalAutoPrintEnabled)
+          : Boolean(current.thermalAutoPrintEnabled),
+        thermalPrinterName: hasThermalPrinterName
+          ? normalizeThermalPrinterName(input.thermalPrinterName)
+          : normalizeThermalPrinterName(current.thermalPrinterName)
       };
 
       persisted = clone(data.meta.uiSettings);
@@ -1420,21 +1498,35 @@ function createErpService() {
   function upsertBusiness(payload) {
     assertLicenseActive();
 
-    const name = toText(payload.name);
-    const phone = toText(payload.phone);
-    const address = toText(payload.address);
-    const gstin = toText(payload.gstin).toUpperCase();
+    const input = payload && typeof payload === 'object' ? payload : {};
+    const name = toText(input.name);
+    const phone = toText(input.phone);
+    const address = toText(input.address);
+    const gstin = toText(input.gstin).toUpperCase();
+    const hasLogoDataUrl = Object.prototype.hasOwnProperty.call(input, 'logoDataUrl');
+    const rawLogoDataUrl = toText(input.logoDataUrl);
+    const logoDataUrl = normalizeBusinessLogoDataUrl(rawLogoDataUrl);
 
     assert(name.length > 0, 'Grocery store name is required');
+    if (hasLogoDataUrl && rawLogoDataUrl) {
+      assert(rawLogoDataUrl.length <= MAX_BUSINESS_LOGO_DATA_URL_LENGTH, 'Store logo is too large');
+      assert(Boolean(logoDataUrl), 'Store logo must be a valid image');
+    }
 
     let persisted;
 
     store.mutate((data) => {
+      const currentBusiness =
+        data.meta.business && typeof data.meta.business === 'object' ? data.meta.business : {};
+
       data.meta.business = {
         name,
         phone,
         address,
-        gstin
+        gstin,
+        logoDataUrl: hasLogoDataUrl
+          ? logoDataUrl
+          : normalizeBusinessLogoDataUrl(currentBusiness.logoDataUrl)
       };
 
       persisted = clone(data.meta.business);
@@ -1733,6 +1825,7 @@ function createErpService() {
     const gstRate = gstEnabled ? round2(toNumber(payload.gstRate, 0)) : 0;
     const paidAmountRaw = payload.paidAmount;
     const paidAmountInput = round2(toNumber(paidAmountRaw, 0));
+    const paidMethod = normalizePaymentMethod(payload.paidMethod || payload.paymentMethod);
     const notes = toText(payload.notes);
 
     assert(discount >= 0, 'Discount cannot be negative');
@@ -1851,6 +1944,7 @@ function createErpService() {
         gstAmount,
         total,
         paidAmount,
+        paidMethod,
         balance,
         paymentStatus: deriveInvoicePaymentStatus(total, paidAmount, balance),
         change,
@@ -1875,6 +1969,7 @@ function createErpService() {
     const gstEnabled = Boolean(payload.gstEnabled);
     const gstRate = gstEnabled ? round2(toNumber(payload.gstRate, 0)) : 0;
     const paidAmount = round2(toNumber(payload.paidAmount, 0));
+    const paidMethod = normalizePaymentMethod(payload.paidMethod || payload.paymentMethod);
     const notes = toText(payload.notes);
 
     assert(supplierId, 'Supplier is required');
@@ -1975,6 +2070,7 @@ function createErpService() {
         gstAmount,
         total,
         paidAmount,
+        paidMethod,
         dueAmount,
         balance: dueAmount,
         notes,
@@ -1994,6 +2090,7 @@ function createErpService() {
 
     const supplierId = toText(payload.supplierId);
     const amount = round2(toNumber(payload.amount, NaN));
+    const paymentMethod = normalizePaymentMethod(payload.paymentMethod || payload.mode || payload.method);
     const notes = toText(payload.notes);
 
     assert(supplierId, 'Supplier is required');
@@ -2060,6 +2157,7 @@ function createErpService() {
           gstin: supplier.gstin
         },
         amount,
+        paymentMethod,
         allocations,
         notes,
         outstandingAfter,
@@ -2079,6 +2177,9 @@ function createErpService() {
 
     const category = toText(payload && payload.category) || 'Other';
     const amount = round2(toNumber(payload && payload.amount, NaN));
+    const paymentMethod = normalizePaymentMethod(
+      payload && (payload.paymentMethod || payload.mode || payload.method)
+    );
     const paidTo = toText(payload && payload.paidTo);
     const notes = toText(payload && payload.notes);
     const expenseDate = parseLocalDateInput(payload && payload.expenseDate);
@@ -2096,6 +2197,7 @@ function createErpService() {
         expenseNo: expenseNumber(data.meta.expenseCounter, createdAt),
         category,
         amount,
+        paymentMethod,
         paidTo,
         notes,
         createdAt,
@@ -2200,7 +2302,9 @@ function createErpService() {
           reference: invoice.invoiceNo,
           debit: 0,
           credit: amount,
-          note: payment.note || '',
+          note: [payment.note || '', `Mode: ${paymentMethodLabel(payment.paymentMethod)}`]
+            .filter(Boolean)
+            .join(' • '),
           total: amount,
           balance: 0
         });
@@ -2216,7 +2320,7 @@ function createErpService() {
           reference: invoice.invoiceNo,
           debit: 0,
           credit: remainingPaid,
-          note: 'Initial payment',
+          note: `Initial payment • Mode: ${paymentMethodLabel(invoice.paidMethod)}`,
           total: remainingPaid,
           balance: 0
         });
@@ -2299,7 +2403,12 @@ function createErpService() {
       reference: purchase.purchaseNo,
       debit: round2(toNumber(purchase.dueAmount, purchase.total - purchase.paidAmount)),
       credit: 0,
-      note: purchase.notes || '',
+      note: [
+        purchase.notes || '',
+        toNumber(purchase.paidAmount, 0) > 0 ? `Initial paid via ${paymentMethodLabel(purchase.paidMethod)}` : ''
+      ]
+        .filter(Boolean)
+        .join(' • '),
       total: purchase.total,
       balance: purchase.balance
     }));
@@ -2311,7 +2420,9 @@ function createErpService() {
       reference: payment.paymentNo,
       debit: 0,
       credit: round2(toNumber(payment.amount, 0)),
-      note: payment.notes || '',
+      note: [payment.notes || '', `Mode: ${paymentMethodLabel(payment.paymentMethod)}`]
+        .filter(Boolean)
+        .join(' • '),
       total: payment.amount,
       balance: 0
     }));
@@ -2437,8 +2548,9 @@ function createErpService() {
       const paidAmount = round2(toNumber(invoice.paidAmount, Math.max(total - toNumber(invoice.balance, 0), 0)));
       const initialPaid = round2(Math.max(paidAmount - historyTotal, 0));
       const initialReceivable = round2(Math.max(total - initialPaid, 0));
+      const initialPaymentAccount = paymentAccountForMethod(invoice.paidMethod);
 
-      post('Cash in Hand', initialPaid, 0);
+      post(initialPaymentAccount, initialPaid, 0);
       post('Accounts Receivable', initialReceivable, 0);
       post('Sales', 0, taxableValue);
       post('Output GST', 0, gstAmount);
@@ -2466,7 +2578,8 @@ function createErpService() {
         }
 
         const amount = round2(toNumber(payment.amount, 0));
-        post('Cash in Hand', amount, 0);
+        const paymentAccount = paymentAccountForMethod(payment.paymentMethod);
+        post(paymentAccount, amount, 0);
         post('Accounts Receivable', 0, amount);
       }
     }
@@ -2479,18 +2592,20 @@ function createErpService() {
       const gstAmount = round2(toNumber(purchase.gstAmount, 0));
       const paidAmount = round2(toNumber(purchase.paidAmount, 0));
       const dueAmount = round2(toNumber(purchase.dueAmount, Math.max(toNumber(purchase.total, 0) - paidAmount, 0)));
+      const paidAccount = paymentAccountForMethod(purchase.paidMethod);
 
       post('Inventory', taxableValue, 0);
       post('Input GST', gstAmount, 0);
-      post('Cash in Hand', 0, paidAmount);
+      post(paidAccount, 0, paidAmount);
       post('Accounts Payable', 0, dueAmount);
     }
 
     const supplierPayments = data.supplierPayments.filter((payment) => isBeforeCutoff(payment.createdAt));
     for (const payment of supplierPayments) {
       const amount = round2(toNumber(payment.amount, 0));
+      const paymentAccount = paymentAccountForMethod(payment.paymentMethod);
       post('Accounts Payable', amount, 0);
-      post('Cash in Hand', 0, amount);
+      post(paymentAccount, 0, amount);
     }
 
     const expenses = (Array.isArray(data.expenses) ? data.expenses : []).filter((expense) =>
@@ -2498,12 +2613,14 @@ function createErpService() {
     );
     for (const expense of expenses) {
       const amount = round2(toNumber(expense.amount, 0));
+      const expenseAccount = paymentAccountForMethod(expense.paymentMethod);
       post('Operating Expenses', amount, 0);
-      post('Cash in Hand', 0, amount);
+      post(expenseAccount, 0, amount);
     }
 
     const accountOrder = [
       'Cash in Hand',
+      'Bank / Digital',
       'Accounts Receivable',
       'Inventory',
       'Input GST',
@@ -2590,6 +2707,9 @@ function createErpService() {
     const invoiceId = toText(payload && payload.invoiceId);
     const amount = round2(toNumber(payload && payload.amount, NaN));
     const note = toText(payload && payload.note);
+    const paymentMethod = normalizePaymentMethod(
+      payload && (payload.paymentMethod || payload.mode || payload.method)
+    );
 
     assert(invoiceId, 'Invoice id is required');
     assert(Number.isFinite(amount) && amount > 0, 'Payment amount must be greater than 0');
@@ -2620,6 +2740,7 @@ function createErpService() {
         id: randomUUID(),
         amount,
         note,
+        paymentMethod,
         createdAt: nowIso()
       });
       invoice.paymentHistory = history;

@@ -24,16 +24,48 @@ function round2(value) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
+function normalizePaymentMethod(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (text === 'cash' || text === 'bank' || text === 'upi' || text === 'card' || text === 'other') {
+    return text;
+  }
+
+  if (text === 'digital' || text === 'online' || text === 'bank_transfer' || text === 'bank transfer') {
+    return 'bank';
+  }
+
+  return 'cash';
+}
+
 const LICENSE_MAX_KEYS = 36;
 const LICENSE_KEY_DAYS = 31;
+const MAX_BUSINESS_LOGO_DATA_URL_LENGTH = 2800000;
 
 function defaultBusiness() {
   return {
     name: ' Grocery Store',
     phone: '+91 90000 00000',
     address: 'Main Street',
-    gstin: ''
+    gstin: '',
+    logoDataUrl: ''
   };
+}
+
+function normalizeBusinessLogoDataUrl(value) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return '';
+  }
+
+  if (!/^data:image\//i.test(text)) {
+    return '';
+  }
+
+  if (text.length > MAX_BUSINESS_LOGO_DATA_URL_LENGTH) {
+    return '';
+  }
+
+  return text;
 }
 
 function normalizeThemeMode(value) {
@@ -47,7 +79,9 @@ function normalizeThemeMode(value) {
 
 function defaultUiSettings() {
   return {
-    themeMode: 'auto'
+    themeMode: 'auto',
+    thermalAutoPrintEnabled: false,
+    thermalPrinterName: ''
   };
 }
 
@@ -231,6 +265,7 @@ function normalizeInvoice(invoice) {
     total,
     paidAmount,
     balance,
+    paidMethod: normalizePaymentMethod(invoice.paidMethod || invoice.paymentMethod || invoice.paidVia),
     paymentStatus: ['unpaid', 'partial', 'paid'].includes(String(invoice.paymentStatus))
       ? String(invoice.paymentStatus)
       : paymentStatus,
@@ -241,6 +276,7 @@ function normalizeInvoice(invoice) {
           id: entry.id || randomUUID(),
           amount: round2(toNumber(entry.amount, 0)),
           note: String(entry.note || '').trim(),
+          paymentMethod: normalizePaymentMethod(entry.paymentMethod || entry.mode || entry.method),
           createdAt: entry.createdAt || nowIso()
         }))
       : [],
@@ -286,6 +322,7 @@ function normalizePurchase(purchase) {
     gstAmount: round2(toNumber(purchase.gstAmount, 0)),
     total: round2(toNumber(purchase.total, 0)),
     paidAmount: round2(toNumber(purchase.paidAmount, 0)),
+    paidMethod: normalizePaymentMethod(purchase.paidMethod || purchase.paymentMethod || purchase.paidVia),
     dueAmount: round2(
       toNumber(purchase.dueAmount, Math.max(toNumber(purchase.total, 0) - toNumber(purchase.paidAmount, 0), 0))
     ),
@@ -307,6 +344,7 @@ function normalizeSupplierPayment(payment) {
   return {
     ...payment,
     amount: round2(toNumber(payment.amount, 0)),
+    paymentMethod: normalizePaymentMethod(payment.paymentMethod || payment.mode || payment.method),
     createdAt: payment.createdAt || nowIso(),
     updatedAt: payment.updatedAt || nowIso(),
     allocations: Array.isArray(payment.allocations)
@@ -324,6 +362,7 @@ function normalizeExpense(expense) {
     expenseNo: String(expense.expenseNo || '').trim(),
     category: String(expense.category || 'Other').trim() || 'Other',
     amount: round2(toNumber(expense.amount, 0)),
+    paymentMethod: normalizePaymentMethod(expense.paymentMethod || expense.mode || expense.method),
     paidTo: String(expense.paidTo || '').trim(),
     notes: String(expense.notes || '').trim(),
     createdAt: expense.createdAt || nowIso(),
@@ -378,7 +417,9 @@ function normalizeUiSettings(uiSettingsSource) {
   const source = uiSettingsSource && typeof uiSettingsSource === 'object' ? uiSettingsSource : {};
 
   return {
-    themeMode: normalizeThemeMode(source.themeMode || defaults.themeMode)
+    themeMode: normalizeThemeMode(source.themeMode || defaults.themeMode),
+    thermalAutoPrintEnabled: Boolean(source.thermalAutoPrintEnabled),
+    thermalPrinterName: String(source.thermalPrinterName || '').trim()
   };
 }
 
@@ -410,7 +451,8 @@ function normalizeData(source) {
         name: String(businessSource.name || businessDefault.name).trim(),
         phone: String(businessSource.phone || businessDefault.phone).trim(),
         address: String(businessSource.address || businessDefault.address).trim(),
-        gstin: String(businessSource.gstin || businessDefault.gstin).trim().toUpperCase()
+        gstin: String(businessSource.gstin || businessDefault.gstin).trim().toUpperCase(),
+        logoDataUrl: normalizeBusinessLogoDataUrl(businessSource.logoDataUrl || businessDefault.logoDataUrl)
       },
       createdAt: meta.createdAt || createdAt,
       updatedAt: meta.updatedAt || createdAt

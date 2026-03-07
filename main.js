@@ -51,7 +51,7 @@ function withResponse(handler) {
 }
 
 async function printInvoice(invoiceId) {
-  const html = await getInvoiceHtml(invoiceId);
+  const html = await getInvoiceHtml(invoiceId, { mode: 'a4' });
 
   const printWindow = new BrowserWindow({
     show: false,
@@ -91,19 +91,124 @@ async function printInvoice(invoiceId) {
   return result;
 }
 
-async function getInvoiceHtml(invoiceId) {
-  const invoicePayload = erpService.getInvoiceForPrint(invoiceId);
-  return renderInvoiceHtml(invoicePayload);
+function normalizePrinterName(value) {
+  return String(value || '').trim();
 }
 
-async function previewInvoice(invoiceId) {
-  const html = await getInvoiceHtml(invoiceId);
+async function runSilentPrint(webContents, options) {
+  return new Promise((resolve) => {
+    webContents.print(options, (success, failureReason) => {
+      if (!success) {
+        resolve({
+          printed: false,
+          reason: failureReason || 'Thermal print failed'
+        });
+        return;
+      }
+
+      resolve({
+        printed: true
+      });
+    });
+  });
+}
+
+async function getAvailablePrinters() {
+  const targetWindow =
+    mainWindow && !mainWindow.isDestroyed() ? mainWindow : BrowserWindow.getAllWindows()[0];
+
+  if (!targetWindow || targetWindow.isDestroyed()) {
+    return [];
+  }
+
+  const printers = await targetWindow.webContents.getPrintersAsync();
+  return printers.map((printer) => ({
+    name: String(printer.name || ''),
+    displayName: String(printer.displayName || printer.name || ''),
+    description: String(printer.description || ''),
+    status: Number(printer.status || 0),
+    isDefault: Boolean(printer.isDefault)
+  }));
+}
+
+async function printInvoiceThermal(payload) {
+  const invoiceId = String(payload && payload.invoiceId ? payload.invoiceId : '').trim();
+  if (!invoiceId) {
+    throw new Error('Invoice id is required');
+  }
+
+  const printerName = normalizePrinterName(payload && payload.printerName);
+  const html = await getInvoiceHtml(invoiceId, { mode: 'thermal' });
+
+  const printWindow = new BrowserWindow({
+    show: false,
+    width: 420,
+    height: 820,
+    webPreferences: {
+      sandbox: true
+    }
+  });
+
+  let result;
+  try {
+    await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+
+    const baseOptions = {
+      silent: true,
+      printBackground: true,
+      margins: {
+        marginType: 'none'
+      },
+      ...(printerName ? { deviceName: printerName } : {})
+    };
+
+    result = await runSilentPrint(printWindow.webContents, {
+      ...baseOptions,
+      pageSize: {
+        width: 80000,
+        height: 297000
+      }
+    });
+
+    if (!result.printed) {
+      result = await runSilentPrint(printWindow.webContents, baseOptions);
+    }
+
+    if (result.printed) {
+      result.printerName = printerName || 'default';
+    }
+  } finally {
+    if (!printWindow.isDestroyed()) {
+      printWindow.close();
+    }
+  }
+
+  if (!result.printed) {
+    throw new Error(result.reason || 'Thermal print failed');
+  }
+
+  return result;
+}
+
+async function getInvoiceHtml(invoiceId, options = {}) {
+  const invoicePayload = erpService.getInvoiceForPrint(invoiceId);
+  return renderInvoiceHtml(invoicePayload, options);
+}
+
+function normalizePreviewMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  return mode === 'thermal' ? 'thermal' : 'a4';
+}
+
+async function previewInvoice(invoiceId, options = {}) {
+  const mode = normalizePreviewMode(options.mode);
+  const html = await getInvoiceHtml(invoiceId, { mode });
   const previewWindow = new BrowserWindow({
     show: true,
-    width: 980,
-    height: 780,
+    width: mode === 'thermal' ? 460 : 980,
+    height: mode === 'thermal' ? 900 : 780,
     autoHideMenuBar: true,
-    title: 'Invoice Preview',
+    title: mode === 'thermal' ? 'Thermal Receipt Preview' : 'Invoice Preview',
     icon: APP_ICON_PATH,
     webPreferences: {
       sandbox: true
@@ -116,7 +221,7 @@ async function previewInvoice(invoiceId) {
   });
 
   await previewWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-  return { opened: true };
+  return { opened: true, mode };
 }
 
 function toSafeFilePart(value, fallback = 'ERPManiaC') {
@@ -261,8 +366,16 @@ function registerIpc() {
     'erp:get-daily-pnl',
     withResponse((inputDate) => erpService.getDailyProfitLoss(inputDate))
   );
+  ipcMain.handle('erp:get-printers', withResponse(() => getAvailablePrinters()));
+  ipcMain.handle(
+    'erp:auto-print-invoice-thermal',
+    withResponse((payload) => printInvoiceThermal(payload))
+  );
   ipcMain.handle('erp:get-invoice', withResponse((invoiceId) => erpService.getInvoice(invoiceId)));
-  ipcMain.handle('erp:preview-invoice', withResponse((invoiceId) => previewInvoice(invoiceId)));
+  ipcMain.handle(
+    'erp:preview-invoice',
+    withResponse((invoiceId, options) => previewInvoice(invoiceId, options))
+  );
   ipcMain.handle('erp:print-invoice', withResponse((invoiceId) => printInvoice(invoiceId)));
   ipcMain.handle('erp:export-stock-list-pdf', withResponse(() => exportStockListPdf()));
 }

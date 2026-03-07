@@ -31,8 +31,10 @@ contextBridge.exposeInMainWorld('erpApi', {
   getSupplierLedger: (supplierId) => ipcRenderer.invoke('erp:get-supplier-ledger', supplierId),
   getTrialBalance: (payload) => ipcRenderer.invoke('erp:get-trial-balance', payload),
   getDailyProfitLoss: (inputDate) => ipcRenderer.invoke('erp:get-daily-pnl', inputDate),
+  getPrinters: () => ipcRenderer.invoke('erp:get-printers'),
+  autoPrintInvoiceThermal: (payload) => ipcRenderer.invoke('erp:auto-print-invoice-thermal', payload),
   getInvoice: (invoiceId) => ipcRenderer.invoke('erp:get-invoice', invoiceId),
-  previewInvoice: (invoiceId) => ipcRenderer.invoke('erp:preview-invoice', invoiceId),
+  previewInvoice: (invoiceId, options) => ipcRenderer.invoke('erp:preview-invoice', invoiceId, options),
   printInvoice: (invoiceId) => ipcRenderer.invoke('erp:print-invoice', invoiceId),
   exportStockListPdf: () => ipcRenderer.invoke('erp:export-stock-list-pdf')
 });

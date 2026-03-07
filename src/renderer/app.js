@@ -18,6 +18,7 @@ const state = {
   reportPeriod: 'daily',
   licenseStatus: null,
   uiSettings: null,
+  availablePrinters: [],
   invoicePaidTouched: false,
   currentView: 'dashboard',
   invoiceSearch: '',
@@ -27,7 +28,8 @@ const state = {
   selectedLedgerCustomerId: '',
   selectedLedgerSupplierId: '',
   pendingPurchaseBarcode: '',
-  purchaseOcrText: ''
+  purchaseOcrText: '',
+  businessLogoDataUrl: ''
 };
 
 const dom = {};
@@ -36,6 +38,8 @@ const BARCODE_SCAN_IDLE_MS = 120;
 let billingBarcodeTimer = null;
 let purchaseBarcodeTimer = null;
 let themeAutoTimer = null;
+const MAX_BUSINESS_LOGO_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_BUSINESS_LOGO_DATA_URL_LENGTH = 2800000;
 
 function getApi() {
   if (!window.erpApi) {
@@ -90,6 +94,42 @@ function formatDate(value) {
 function normalizeSaleUnit(value) {
   const normalized = String(value || '').trim().toLowerCase();
   return normalized === 'pack' || normalized.startsWith('pack') ? 'pack' : 'loose';
+}
+
+function normalizePaymentMethod(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (
+    normalized === 'cash' ||
+    normalized === 'bank' ||
+    normalized === 'upi' ||
+    normalized === 'card' ||
+    normalized === 'other'
+  ) {
+    return normalized;
+  }
+
+  if (normalized === 'digital' || normalized === 'online' || normalized === 'bank transfer') {
+    return 'bank';
+  }
+
+  return 'cash';
+}
+
+function paymentMethodLabel(value) {
+  const normalized = normalizePaymentMethod(value);
+  if (normalized === 'cash') {
+    return 'Cash';
+  }
+  if (normalized === 'bank') {
+    return 'Bank';
+  }
+  if (normalized === 'upi') {
+    return 'UPI';
+  }
+  if (normalized === 'card') {
+    return 'Card';
+  }
+  return 'Other';
 }
 
 function getProductPackConfig(product) {
@@ -326,6 +366,37 @@ function getInvoicePendingAmount(invoice) {
   return round2(Math.max(toNumber(invoice && invoice.balance, fallbackBalance), 0));
 }
 
+function getInvoicePaymentModeLabel(invoice) {
+  const methods = new Set();
+  const history = Array.isArray(invoice && invoice.paymentHistory) ? invoice.paymentHistory : [];
+  const paidAmount = round2(toNumber(invoice && invoice.paidAmount, 0));
+  let historyPaid = 0;
+
+  for (const payment of history) {
+    const amount = round2(toNumber(payment && payment.amount, 0));
+    if (amount <= 0) {
+      continue;
+    }
+    historyPaid = round2(historyPaid + amount);
+    methods.add(normalizePaymentMethod(payment && payment.paymentMethod));
+  }
+
+  const initialPaid = round2(Math.max(paidAmount - historyPaid, 0));
+  if (initialPaid > 0) {
+    methods.add(normalizePaymentMethod(invoice && invoice.paidMethod));
+  }
+
+  if (!methods.size) {
+    return '-';
+  }
+
+  if (methods.size === 1) {
+    return paymentMethodLabel([...methods][0]);
+  }
+
+  return 'Mixed';
+}
+
 function setStatus(text) {
   dom.statusPill.textContent = text;
 }
@@ -337,6 +408,32 @@ function normalizeThemeMode(value) {
   }
 
   return 'auto';
+}
+
+function normalizeUiSettingsForUi(settings) {
+  const source = settings && typeof settings === 'object' ? settings : {};
+  return {
+    themeMode: normalizeThemeMode(source.themeMode),
+    thermalAutoPrintEnabled: Boolean(source.thermalAutoPrintEnabled),
+    thermalPrinterName: String(source.thermalPrinterName || '').trim()
+  };
+}
+
+function normalizeBusinessLogoDataUrl(value) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return '';
+  }
+
+  if (!/^data:image\//i.test(text)) {
+    return '';
+  }
+
+  if (text.length > MAX_BUSINESS_LOGO_DATA_URL_LENGTH) {
+    return '';
+  }
+
+  return text;
 }
 
 function resolveThemeByMode(mode) {
@@ -479,6 +576,10 @@ function cacheDom() {
   dom.businessGstin = document.getElementById('business-gstin');
   dom.businessAddress = document.getElementById('business-address');
   dom.businessInvoicePrefix = document.getElementById('business-invoice-prefix');
+  dom.businessLogoFile = document.getElementById('business-logo-file');
+  dom.businessLogoPreview = document.getElementById('business-logo-preview');
+  dom.businessLogoEmpty = document.getElementById('business-logo-empty');
+  dom.businessLogoClearBtn = document.getElementById('business-logo-clear-btn');
   dom.businessSaveBtn = document.getElementById('business-save-btn');
   dom.backupForm = document.getElementById('backup-form');
   dom.backupEnabled = document.getElementById('backup-enabled');
@@ -492,6 +593,11 @@ function cacheDom() {
   dom.backupSaveBtn = document.getElementById('backup-save-btn');
   dom.backupManualBtn = document.getElementById('backup-manual-btn');
   dom.backupRestoreBtn = document.getElementById('backup-restore-btn');
+  dom.thermalPrintForm = document.getElementById('thermal-print-form');
+  dom.thermalAutoPrintEnabled = document.getElementById('thermal-auto-print-enabled');
+  dom.thermalPrinterSelect = document.getElementById('thermal-printer-select');
+  dom.thermalRefreshPrintersBtn = document.getElementById('thermal-refresh-printers-btn');
+  dom.thermalSaveBtn = document.getElementById('thermal-save-btn');
 
   dom.productForm = document.getElementById('product-form');
   dom.productBody = document.getElementById('products-body');
@@ -518,6 +624,7 @@ function cacheDom() {
   dom.ledgerSupplierSelect = document.getElementById('ledger-supplier-select');
   dom.supplierOutstanding = document.getElementById('supplier-outstanding');
   dom.supplierPaymentAmount = document.getElementById('supplier-payment-amount');
+  dom.supplierPaymentMethod = document.getElementById('supplier-payment-method');
   dom.supplierPaymentNotes = document.getElementById('supplier-payment-notes');
   dom.supplierPaymentBtn = document.getElementById('supplier-payment-btn');
   dom.supplierLedgerBody = document.getElementById('supplier-ledger-body');
@@ -528,6 +635,7 @@ function cacheDom() {
   dom.purchaseGstRate = document.getElementById('purchase-gst-rate');
   dom.purchaseDiscount = document.getElementById('purchase-discount');
   dom.purchasePaid = document.getElementById('purchase-paid');
+  dom.purchasePaidMethod = document.getElementById('purchase-paid-method');
   dom.purchaseNotes = document.getElementById('purchase-notes');
   dom.purchaseBarcodeInput = document.getElementById('purchase-barcode-input');
   dom.purchaseOcrBtn = document.getElementById('purchase-ocr-btn');
@@ -601,6 +709,7 @@ function cacheDom() {
   dom.expenseForm = document.getElementById('expense-form');
   dom.expenseCategory = document.getElementById('expense-category');
   dom.expenseAmount = document.getElementById('expense-amount');
+  dom.expensePaymentMethod = document.getElementById('expense-payment-method');
   dom.expenseDate = document.getElementById('expense-date');
   dom.expensePaidTo = document.getElementById('expense-paid-to');
   dom.expenseNotes = document.getElementById('expense-notes');
@@ -615,6 +724,7 @@ function cacheDom() {
   dom.invoiceGstRate = document.getElementById('invoice-gst-rate');
   dom.invoiceDiscount = document.getElementById('invoice-discount');
   dom.invoicePaid = document.getElementById('invoice-paid');
+  dom.invoicePaidMethod = document.getElementById('invoice-paid-method');
   dom.invoiceNotes = document.getElementById('invoice-notes');
   dom.openBillingCustomerModalBtn = document.getElementById('open-billing-customer-modal-btn');
   dom.billingCustomerModal = document.getElementById('billing-customer-modal');
@@ -650,6 +760,7 @@ function cacheDom() {
   dom.invoicePaymentInvoiceId = document.getElementById('invoice-payment-invoice-id');
   dom.invoicePaymentPending = document.getElementById('invoice-payment-pending');
   dom.invoicePaymentAmount = document.getElementById('invoice-payment-amount');
+  dom.invoicePaymentMethod = document.getElementById('invoice-payment-method');
   dom.invoicePaymentNote = document.getElementById('invoice-payment-note');
   dom.invoicePaymentCancelBtn = document.getElementById('invoice-payment-cancel-btn');
   dom.invoicePaymentFullBtn = document.getElementById('invoice-payment-full-btn');
@@ -684,15 +795,15 @@ function bindNavigation() {
 function bindSidebarShortcuts() {
   const viewByDigit = {
     Digit1: 'dashboard',
-    Digit2: 'store',
-    Digit3: 'products',
-    Digit4: 'customers',
-    Digit5: 'suppliers',
-    Digit6: 'purchases',
-    Digit0: 'expenses',
+    Digit2: 'products',
+    Digit3: 'customers',
+    Digit4: 'suppliers',
+    Digit5: 'purchases',
+    Digit6: 'expenses',
     Digit7: 'billing',
     Digit8: 'invoices',
-    Digit9: 'reports'
+    Digit9: 'reports',
+    Digit0: 'settings'
   };
 
   document.addEventListener('keydown', (event) => {
@@ -717,18 +828,101 @@ function bindSidebarShortcuts() {
   });
 }
 
+function clickIfEnabled(button) {
+  if (!button || button.disabled) {
+    return false;
+  }
+
+  button.click();
+  return true;
+}
+
+function runPrimaryActionShortcut() {
+  if (dom.invoicePaymentModal && dom.invoicePaymentModal.open) {
+    return clickIfEnabled(dom.invoicePaymentPartialBtn);
+  }
+
+  const view = state.currentView || 'dashboard';
+  if (view === 'billing') {
+    return clickIfEnabled(dom.invoiceSubmitBtn);
+  }
+  if (view === 'purchases') {
+    return clickIfEnabled(dom.purchaseSubmitBtn);
+  }
+  if (view === 'expenses') {
+    return clickIfEnabled(dom.expenseSubmitBtn);
+  }
+  if (view === 'products') {
+    return clickIfEnabled(dom.productSaveBtn);
+  }
+  if (view === 'customers') {
+    return clickIfEnabled(dom.customerSaveBtn);
+  }
+  if (view === 'suppliers') {
+    return clickIfEnabled(dom.supplierSaveBtn);
+  }
+  if (view === 'settings') {
+    return clickIfEnabled(dom.businessSaveBtn);
+  }
+
+  return false;
+}
+
+function bindActionShortcuts() {
+  document.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented) {
+      return;
+    }
+
+    if (
+      event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      String(event.key || '').toLowerCase() === 'enter'
+    ) {
+      if (runPrimaryActionShortcut()) {
+        event.preventDefault();
+      }
+      return;
+    }
+
+    if (!event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+
+    const view = state.currentView || 'dashboard';
+    let handled = false;
+
+    if (event.code === 'KeyI' && view === 'billing') {
+      handled = clickIfEnabled(dom.invoiceSubmitBtn);
+    } else if (event.code === 'KeyP' && view === 'purchases') {
+      handled = clickIfEnabled(dom.purchaseSubmitBtn);
+    } else if (event.code === 'KeyE' && view === 'expenses') {
+      handled = clickIfEnabled(dom.expenseSubmitBtn);
+    } else if (event.code === 'KeyU' && view === 'suppliers') {
+      handled = clickIfEnabled(dom.supplierPaymentBtn);
+    } else if (event.code === 'KeyR' && dom.invoicePaymentModal && dom.invoicePaymentModal.open) {
+      handled = clickIfEnabled(dom.invoicePaymentPartialBtn);
+    }
+
+    if (handled) {
+      event.preventDefault();
+    }
+  });
+}
+
 function bindThemeMode() {
   if (!dom.themeModeSelect) {
     return;
   }
 
   dom.themeModeSelect.addEventListener('change', async () => {
-    const previousMode = normalizeThemeMode(state.uiSettings && state.uiSettings.themeMode);
+    const previousSettings = normalizeUiSettingsForUi(state.uiSettings);
     const nextMode = normalizeThemeMode(dom.themeModeSelect.value);
     const previousStatus = dom.statusPill.textContent;
 
     state.uiSettings = {
-      ...(state.uiSettings || {}),
+      ...previousSettings,
       themeMode: nextMode
     };
     applyThemeMode(nextMode);
@@ -736,15 +930,17 @@ function bindThemeMode() {
     try {
       setStatus('Saving theme...');
       const updated = await invoke('upsertUiSettings', { themeMode: nextMode });
-      state.uiSettings = updated || { themeMode: nextMode };
-      applyThemeMode(state.uiSettings.themeMode);
+      state.uiSettings = normalizeUiSettingsForUi(
+        updated || {
+          ...previousSettings,
+          themeMode: nextMode
+        }
+      );
+      renderUiSettings();
       setStatus(previousStatus);
     } catch (error) {
-      state.uiSettings = {
-        ...(state.uiSettings || {}),
-        themeMode: previousMode
-      };
-      applyThemeMode(previousMode);
+      state.uiSettings = previousSettings;
+      renderUiSettings();
       setStatus(previousStatus);
       showToast(error.message, 'error');
     }
@@ -756,6 +952,52 @@ function bindBusiness() {
     dom.businessInvoicePrefix.value = invoicePrefixPreview(dom.businessName.value);
   });
 
+  if (dom.businessLogoClearBtn) {
+    dom.businessLogoClearBtn.addEventListener('click', () => {
+      state.businessLogoDataUrl = '';
+      renderBusinessLogoPreview();
+      showToast('Logo removed. Click Save Settings to apply');
+    });
+  }
+
+  if (dom.businessLogoFile) {
+    dom.businessLogoFile.addEventListener('change', async () => {
+      const file = dom.businessLogoFile.files && dom.businessLogoFile.files[0];
+      if (!file) {
+        return;
+      }
+
+      const previousStatus = dom.statusPill.textContent;
+
+      try {
+        if (!String(file.type || '').toLowerCase().startsWith('image/')) {
+          throw new Error('Please choose an image file for store logo');
+        }
+
+        if (file.size > MAX_BUSINESS_LOGO_FILE_BYTES) {
+          throw new Error('Logo file must be 2 MB or smaller');
+        }
+
+        setStatus('Reading logo...');
+        const dataUrl = await readFileAsDataUrl(file);
+        const normalizedLogo = normalizeBusinessLogoDataUrl(dataUrl);
+        if (!normalizedLogo) {
+          throw new Error('Unsupported logo format');
+        }
+
+        state.businessLogoDataUrl = normalizedLogo;
+        renderBusinessLogoPreview();
+        showToast('Logo ready. Click Save Settings to apply');
+        setStatus(previousStatus);
+      } catch (error) {
+        setStatus(previousStatus);
+        showToast(error.message, 'error');
+      } finally {
+        dom.businessLogoFile.value = '';
+      }
+    });
+  }
+
   dom.businessForm.addEventListener('submit', async (event) => {
     event.preventDefault();
 
@@ -763,14 +1005,15 @@ function bindBusiness() {
       name: dom.businessName.value,
       phone: dom.businessPhone.value,
       gstin: dom.businessGstin.value,
-      address: dom.businessAddress.value
+      address: dom.businessAddress.value,
+      logoDataUrl: normalizeBusinessLogoDataUrl(state.businessLogoDataUrl)
     };
 
     try {
-      setStatus('Saving store details...');
+      setStatus('Saving settings...');
       await invoke('upsertBusiness', payload);
       await reloadData();
-      showToast('Store details updated');
+      showToast('Settings updated');
       setStatus('Live');
     } catch (error) {
       setStatus('Live');
@@ -945,6 +1188,164 @@ function bindBackup() {
       }
     });
   }
+}
+
+function normalizePrinterList(printers) {
+  const source = Array.isArray(printers) ? printers : [];
+  const seen = new Set();
+  const normalized = [];
+
+  for (const printer of source) {
+    const name = String(printer && printer.name ? printer.name : '').trim();
+    const displayName = String(
+      printer && (printer.displayName || printer.name) ? printer.displayName || printer.name : ''
+    ).trim();
+
+    if (!name || seen.has(name)) {
+      continue;
+    }
+
+    seen.add(name);
+    normalized.push({
+      name,
+      displayName: displayName || name,
+      isDefault: Boolean(printer && printer.isDefault)
+    });
+  }
+
+  return normalized.sort((a, b) => a.displayName.localeCompare(b.displayName));
+}
+
+function updateThermalFormState() {
+  if (!dom.thermalPrintForm) {
+    return;
+  }
+
+  const enabled = Boolean(dom.thermalAutoPrintEnabled && dom.thermalAutoPrintEnabled.checked);
+
+  if (dom.thermalPrinterSelect) {
+    dom.thermalPrinterSelect.disabled = !enabled;
+  }
+}
+
+function renderThermalPrinterOptions(selectedPrinterName = '') {
+  if (!dom.thermalPrinterSelect) {
+    return;
+  }
+
+  const selected = String(selectedPrinterName || '').trim();
+  const printers = Array.isArray(state.availablePrinters) ? state.availablePrinters : [];
+  dom.thermalPrinterSelect.innerHTML = '';
+
+  const defaultOption = document.createElement('option');
+  defaultOption.value = '';
+  defaultOption.textContent = 'System Default Printer';
+  dom.thermalPrinterSelect.append(defaultOption);
+
+  for (const printer of printers) {
+    const option = document.createElement('option');
+    option.value = printer.name;
+    option.textContent = printer.isDefault
+      ? `${printer.displayName} (Default)`
+      : printer.displayName;
+    dom.thermalPrinterSelect.append(option);
+  }
+
+  const hasSelectedPrinter = printers.some((printer) => printer.name === selected);
+  if (selected && !hasSelectedPrinter) {
+    const manualOption = document.createElement('option');
+    manualOption.value = selected;
+    manualOption.textContent = `${selected} (Saved)`;
+    dom.thermalPrinterSelect.append(manualOption);
+  }
+
+  dom.thermalPrinterSelect.value = selected || '';
+}
+
+function renderThermalSettings() {
+  if (!dom.thermalPrintForm) {
+    return;
+  }
+
+  const uiSettings = normalizeUiSettingsForUi(state.uiSettings);
+  dom.thermalAutoPrintEnabled.checked = uiSettings.thermalAutoPrintEnabled;
+  renderThermalPrinterOptions(uiSettings.thermalPrinterName);
+  updateThermalFormState();
+}
+
+async function refreshThermalPrinters(options = {}) {
+  const { silentError = false } = options;
+
+  try {
+    const printers = await invoke('getPrinters');
+    state.availablePrinters = normalizePrinterList(printers);
+    const selectedValue = dom.thermalPrinterSelect
+      ? dom.thermalPrinterSelect.value
+      : normalizeUiSettingsForUi(state.uiSettings).thermalPrinterName;
+    renderThermalPrinterOptions(selectedValue);
+  } catch (error) {
+    state.availablePrinters = [];
+    renderThermalPrinterOptions(dom.thermalPrinterSelect ? dom.thermalPrinterSelect.value : '');
+    if (!silentError) {
+      showToast(error.message, 'error');
+    }
+  }
+}
+
+function readThermalSettingsPayloadFromForm() {
+  return {
+    thermalAutoPrintEnabled: Boolean(
+      dom.thermalAutoPrintEnabled && dom.thermalAutoPrintEnabled.checked
+    ),
+    thermalPrinterName: String(dom.thermalPrinterSelect && dom.thermalPrinterSelect.value ? dom.thermalPrinterSelect.value : '').trim()
+  };
+}
+
+async function saveThermalSettings() {
+  const payload = readThermalSettingsPayloadFromForm();
+  const updated = await invoke('upsertUiSettings', payload);
+  state.uiSettings = normalizeUiSettingsForUi(updated || { ...(state.uiSettings || {}), ...payload });
+  renderUiSettings();
+  showToast('Thermal settings saved');
+}
+
+function bindThermalPrinting() {
+  if (!dom.thermalPrintForm) {
+    return;
+  }
+
+  if (dom.thermalAutoPrintEnabled) {
+    dom.thermalAutoPrintEnabled.addEventListener('change', () => {
+      updateThermalFormState();
+    });
+  }
+
+  if (dom.thermalRefreshPrintersBtn) {
+    dom.thermalRefreshPrintersBtn.addEventListener('click', async () => {
+      const previousStatus = dom.statusPill.textContent;
+      try {
+        setStatus('Loading printers...');
+        await refreshThermalPrinters();
+        setStatus(previousStatus);
+      } catch (_error) {
+        setStatus(previousStatus);
+      }
+    });
+  }
+
+  dom.thermalPrintForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const previousStatus = dom.statusPill.textContent;
+    try {
+      setStatus('Saving thermal settings...');
+      await saveThermalSettings();
+      setStatus(previousStatus);
+    } catch (error) {
+      setStatus(previousStatus);
+      showToast(error.message, 'error');
+    }
+  });
 }
 
 function bindLicense() {
@@ -1276,6 +1677,7 @@ function bindSuppliers() {
   dom.supplierPaymentBtn.addEventListener('click', async () => {
     const supplierId = state.selectedLedgerSupplierId || dom.ledgerSupplierSelect.value;
     const amount = dom.supplierPaymentAmount.value;
+    const paymentMethod = normalizePaymentMethod(dom.supplierPaymentMethod.value);
     const notes = dom.supplierPaymentNotes.value;
 
     if (!supplierId) {
@@ -1288,10 +1690,12 @@ function bindSuppliers() {
       const payment = await invoke('createSupplierPayment', {
         supplierId,
         amount,
+        paymentMethod,
         notes
       });
 
       dom.supplierPaymentAmount.value = '';
+      dom.supplierPaymentMethod.value = 'cash';
       dom.supplierPaymentNotes.value = '';
 
       await reloadData();
@@ -1518,6 +1922,7 @@ function bindPurchases() {
       gstRate: dom.purchaseGstRate.value,
       discount: dom.purchaseDiscount.value,
       paidAmount: dom.purchasePaid.value,
+      paidMethod: normalizePaymentMethod(dom.purchasePaidMethod.value),
       notes: dom.purchaseNotes.value,
       items: state.purchaseDraftItems.map((item) => ({
         productId: item.productId,
@@ -1666,6 +2071,7 @@ function bindExpenses() {
     const payload = {
       category: dom.expenseCategory.value,
       amount: dom.expenseAmount.value,
+      paymentMethod: normalizePaymentMethod(dom.expensePaymentMethod.value),
       expenseDate: dom.expenseDate.value,
       paidTo: dom.expensePaidTo.value,
       notes: dom.expenseNotes.value
@@ -1676,6 +2082,7 @@ function bindExpenses() {
       const expense = await invoke('createExpense', payload);
 
       dom.expenseAmount.value = '';
+      dom.expensePaymentMethod.value = 'cash';
       dom.expensePaidTo.value = '';
       dom.expenseNotes.value = '';
       dom.expenseDate.value = todayKey();
@@ -1693,6 +2100,24 @@ function bindExpenses() {
   dom.expenseSearch.addEventListener('input', () => {
     state.expenseSearch = dom.expenseSearch.value.trim().toLowerCase();
     renderExpenses();
+  });
+}
+
+function triggerThermalInvoiceAutoPrint(invoice) {
+  if (!invoice || !invoice.id) {
+    return;
+  }
+
+  const uiSettings = normalizeUiSettingsForUi(state.uiSettings);
+  if (!uiSettings.thermalAutoPrintEnabled) {
+    return;
+  }
+
+  invoke('autoPrintInvoiceThermal', {
+    invoiceId: invoice.id,
+    printerName: uiSettings.thermalPrinterName
+  }).catch((error) => {
+    showToast(`Thermal print failed: ${error.message}`, 'error');
   });
 }
 
@@ -1916,6 +2341,7 @@ function bindBilling() {
       gstRate: dom.invoiceGstRate.value,
       discount: dom.invoiceDiscount.value,
       paidAmount: dom.invoicePaid.value,
+      paidMethod: normalizePaymentMethod(dom.invoicePaidMethod.value),
       notes: dom.invoiceNotes.value,
       items: state.draftItems.map((item) => ({
         productId: item.productId,
@@ -1930,6 +2356,7 @@ function bindBilling() {
 
       clearInvoiceDraft();
       await reloadData();
+      triggerThermalInvoiceAutoPrint(invoice);
       showToast(`Invoice ${invoice.invoiceNo} created successfully`);
       dom.barcodeInput.focus();
       setStatus('Live');
@@ -2030,6 +2457,7 @@ function openInvoicePaymentModal(invoice) {
   )}`;
   dom.invoicePaymentPending.value = formatMoney(pending);
   dom.invoicePaymentAmount.value = pending.toFixed(2);
+  dom.invoicePaymentMethod.value = normalizePaymentMethod(invoice.paidMethod || 'cash');
   dom.invoicePaymentNote.value = '';
 
   if (typeof modal.showModal === 'function') {
@@ -2045,7 +2473,7 @@ function openInvoicePaymentModal(invoice) {
   return true;
 }
 
-async function submitInvoicePayment(invoice, amountInput, noteInput) {
+async function submitInvoicePayment(invoice, amountInput, paymentMethodInput, noteInput) {
   if (!invoice) {
     showToast('Invoice not found', 'error');
     return false;
@@ -2058,6 +2486,7 @@ async function submitInvoicePayment(invoice, amountInput, noteInput) {
   }
 
   const amount = round2(toNumber(amountInput, NaN));
+  const paymentMethod = normalizePaymentMethod(paymentMethodInput);
   if (!Number.isFinite(amount) || amount <= 0) {
     showToast('Enter a valid payment amount', 'error');
     return false;
@@ -2073,6 +2502,7 @@ async function submitInvoicePayment(invoice, amountInput, noteInput) {
     const updated = await invoke('recordInvoicePayment', {
       invoiceId: invoice.id,
       amount,
+      paymentMethod,
       note: String(noteInput || '').trim()
     });
     await reloadData();
@@ -2111,7 +2541,12 @@ function bindInvoices() {
         return;
       }
 
-      await submitInvoicePayment(invoice, getInvoicePendingAmount(invoice), dom.invoicePaymentNote.value);
+      await submitInvoicePayment(
+        invoice,
+        getInvoicePendingAmount(invoice),
+        dom.invoicePaymentMethod.value,
+        dom.invoicePaymentNote.value
+      );
     });
 
     dom.invoicePaymentForm.addEventListener('submit', async (event) => {
@@ -2124,7 +2559,12 @@ function bindInvoices() {
         return;
       }
 
-      await submitInvoicePayment(invoice, dom.invoicePaymentAmount.value, dom.invoicePaymentNote.value);
+      await submitInvoicePayment(
+        invoice,
+        dom.invoicePaymentAmount.value,
+        dom.invoicePaymentMethod.value,
+        dom.invoicePaymentNote.value
+      );
     });
   }
 
@@ -2155,7 +2595,7 @@ function bindInvoices() {
       if (promptValue === null) {
         return;
       }
-      await submitInvoicePayment(invoice, promptValue, '');
+      await submitInvoicePayment(invoice, promptValue, 'cash', '');
       return;
     }
 
@@ -2163,8 +2603,22 @@ function bindInvoices() {
     if (previewBtn) {
       try {
         setStatus('Opening invoice preview...');
-        await invoke('previewInvoice', previewBtn.dataset.previewId);
+        await invoke('previewInvoice', previewBtn.dataset.previewId, { mode: 'a4' });
         showToast('Invoice preview opened');
+        setStatus('Live');
+      } catch (error) {
+        setStatus('Live');
+        showToast(error.message, 'error');
+      }
+      return;
+    }
+
+    const thermalPreviewBtn = event.target.closest('button[data-preview-thermal-id]');
+    if (thermalPreviewBtn) {
+      try {
+        setStatus('Opening thermal preview...');
+        await invoke('previewInvoice', thermalPreviewBtn.dataset.previewThermalId, { mode: 'thermal' });
+        showToast('Thermal receipt preview opened');
         setStatus('Live');
       } catch (error) {
         setStatus('Live');
@@ -2224,7 +2678,6 @@ function switchView(view) {
 
   const titles = {
     dashboard: 'Dashboard',
-    store: 'Store Details',
     products: 'Products',
     customers: 'Customers',
     suppliers: 'Suppliers',
@@ -2232,7 +2685,8 @@ function switchView(view) {
     expenses: 'Expenses',
     billing: 'Billing',
     invoices: 'Invoices',
-    reports: 'Reports'
+    reports: 'Reports',
+    settings: 'Settings'
   };
 
   dom.viewTitle.textContent = titles[view] || 'ERPManiaC';
@@ -2243,6 +2697,8 @@ function switchView(view) {
     dom.purchaseBarcodeInput.focus();
   } else if (view === 'expenses') {
     dom.expenseAmount.focus();
+  } else if (view === 'settings' && dom.businessName) {
+    dom.businessName.focus();
   }
 }
 
@@ -2727,12 +3183,35 @@ function fillSupplierForm(supplier) {
   dom.supplierSaveBtn.textContent = 'Update Supplier';
 }
 
+function renderBusinessLogoPreview() {
+  if (!dom.businessLogoPreview || !dom.businessLogoEmpty || !dom.businessLogoClearBtn) {
+    return;
+  }
+
+  const logoDataUrl = normalizeBusinessLogoDataUrl(state.businessLogoDataUrl);
+  state.businessLogoDataUrl = logoDataUrl;
+
+  if (!logoDataUrl) {
+    dom.businessLogoPreview.classList.remove('show');
+    dom.businessLogoPreview.removeAttribute('src');
+    dom.businessLogoEmpty.style.display = '';
+    dom.businessLogoClearBtn.disabled = true;
+    return;
+  }
+
+  dom.businessLogoPreview.src = logoDataUrl;
+  dom.businessLogoPreview.classList.add('show');
+  dom.businessLogoEmpty.style.display = 'none';
+  dom.businessLogoClearBtn.disabled = false;
+}
+
 function renderBusiness() {
   const business = state.business || {
     name: '',
     phone: '',
     address: '',
-    gstin: ''
+    gstin: '',
+    logoDataUrl: ''
   };
 
   dom.businessName.value = business.name || '';
@@ -2741,6 +3220,11 @@ function renderBusiness() {
   dom.businessAddress.value = business.address || '';
   dom.businessInvoicePrefix.value = invoicePrefixPreview(business.name || '');
   dom.brandShopName.textContent = business.name || 'Grocery Offline ERP';
+  state.businessLogoDataUrl = normalizeBusinessLogoDataUrl(business.logoDataUrl);
+  if (dom.businessLogoFile) {
+    dom.businessLogoFile.value = '';
+  }
+  renderBusinessLogoPreview();
 }
 
 function renderBackupSettings() {
@@ -2763,13 +3247,10 @@ function renderBackupSettings() {
 }
 
 function renderUiSettings() {
-  const uiSettings = state.uiSettings || { themeMode: 'auto' };
-  const themeMode = normalizeThemeMode(uiSettings.themeMode);
-  state.uiSettings = {
-    ...uiSettings,
-    themeMode
-  };
-  applyThemeMode(themeMode);
+  const uiSettings = normalizeUiSettingsForUi(state.uiSettings);
+  state.uiSettings = uiSettings;
+  applyThemeMode(uiSettings.themeMode);
+  renderThermalSettings();
 }
 
 function renderDashboard() {
@@ -3321,6 +3802,7 @@ function clearPurchaseDraft() {
   dom.purchaseGstRate.disabled = true;
   dom.purchaseDiscount.value = '0';
   dom.purchasePaid.value = '0';
+  dom.purchasePaidMethod.value = 'cash';
   dom.purchaseNotes.value = '';
   dom.purchaseBarcodeInput.value = '';
   dom.purchaseDraftQty.value = '1';
@@ -3336,7 +3818,8 @@ function renderPurchases() {
   let purchases = [...state.purchases];
   if (search) {
     purchases = purchases.filter((purchase) => {
-      const text = `${purchase.purchaseNo} ${purchase.supplierSnapshot.name}`.toLowerCase();
+      const text =
+        `${purchase.purchaseNo} ${purchase.supplierSnapshot.name} ${paymentMethodLabel(purchase.paidMethod)}`.toLowerCase();
       return text.includes(search);
     });
   }
@@ -3354,7 +3837,10 @@ function renderPurchases() {
           <td>${formatDate(purchase.createdAt)}</td>
           <td>${purchase.supplierSnapshot.name}</td>
           <td>${formatMoney(purchase.total)}</td>
-          <td>${formatMoney(purchase.paidAmount)}</td>
+          <td>
+            ${formatMoney(purchase.paidAmount)}
+            <div class="muted">${paymentMethodLabel(purchase.paidMethod)}</div>
+          </td>
           <td>${formatMoney(purchase.balance)}</td>
           <td>${purchase.gstEnabled ? `${purchase.gstRate}%` : 'No GST'}</td>
         </tr>
@@ -3369,7 +3855,10 @@ function renderExpenses() {
 
   if (search) {
     expenses = expenses.filter((expense) => {
-      const text = `${expense.expenseNo} ${expense.category} ${expense.paidTo || ''} ${expense.notes || ''}`.toLowerCase();
+      const text =
+        `${expense.expenseNo} ${expense.category} ${expense.paidTo || ''} ${expense.notes || ''} ${paymentMethodLabel(
+          expense.paymentMethod
+        )}`.toLowerCase();
       return text.includes(search);
     });
   }
@@ -3388,7 +3877,10 @@ function renderExpenses() {
           <td><span class="tag expense">${expense.category}</span></td>
           <td>${expense.paidTo || '-'}</td>
           <td>${expense.notes || '-'}</td>
-          <td>${formatMoney(expense.amount)}</td>
+          <td>
+            ${formatMoney(expense.amount)}
+            <div class="muted">${paymentMethodLabel(expense.paymentMethod)}</div>
+          </td>
         </tr>
       `
     )
@@ -3687,6 +4179,7 @@ function clearInvoiceDraft() {
   dom.invoiceGstRate.disabled = true;
   dom.invoiceDiscount.value = '0';
   dom.invoicePaid.value = '';
+  dom.invoicePaidMethod.value = 'cash';
   dom.invoiceNotes.value = '';
   state.billingProductSearch = '';
   dom.billingProductSearch.value = '';
@@ -3726,6 +4219,7 @@ function renderInvoices() {
           : paymentStatus === 'partial'
             ? 'Partial'
             : 'Unpaid';
+      const paymentModeLabel = getInvoicePaymentModeLabel(invoice);
 
       const receiveDisabled = pendingAmount <= 0 ? 'disabled' : '';
 
@@ -3737,11 +4231,15 @@ function renderInvoices() {
           <td>${invoice.customerSnapshot.name}</td>
           <td>${formatMoney(invoice.total)}</td>
           <td>${formatMoney(pendingAmount)}</td>
-          <td><span class="tag payment-${paymentStatus}">${paymentLabel}</span></td>
+          <td>
+            <span class="tag payment-${paymentStatus}">${paymentLabel}</span>
+            <div class="muted">${paymentModeLabel}</div>
+          </td>
           <td>${invoice.gstEnabled ? `${invoice.gstRate}%` : 'No GST'}</td>
           <td>
             <button class="btn small subtle" data-pay-id="${invoice.id}" ${receiveDisabled}>Receive</button>
             <button class="btn small subtle" data-preview-id="${invoice.id}">View</button>
+            <button class="btn small subtle" data-preview-thermal-id="${invoice.id}">Thermal</button>
             <button class="btn small ghost" data-print-id="${invoice.id}">Print</button>
           </td>
         </tr>
@@ -3983,7 +4481,7 @@ async function reloadData() {
   state.business = bootstrap.business || null;
   state.backup = bootstrap.backup || null;
   state.licenseStatus = bootstrap.licenseStatus || null;
-  state.uiSettings = bootstrap.uiSettings || { themeMode: 'auto' };
+  state.uiSettings = normalizeUiSettingsForUi(bootstrap.uiSettings);
 
   if (
     state.selectedLedgerCustomerId &&
@@ -4007,12 +4505,14 @@ async function reloadData() {
 
 async function initializeApp() {
   cacheDom();
-  state.uiSettings = { themeMode: 'auto' };
+  state.uiSettings = normalizeUiSettingsForUi({});
   applyThemeMode(state.uiSettings.themeMode);
   bindLicense();
   bindNavigation();
   bindSidebarShortcuts();
+  bindActionShortcuts();
   bindThemeMode();
+  bindThermalPrinting();
   bindBusiness();
   bindBackup();
   bindProducts();
@@ -4039,6 +4539,7 @@ async function initializeApp() {
   try {
     setStatus('Loading data...');
     await reloadData();
+    await refreshThermalPrinters({ silentError: true });
     if (state.licenseStatus?.isActive) {
       setStatus('Live');
       dom.barcodeInput.focus();
