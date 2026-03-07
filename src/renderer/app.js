@@ -88,14 +88,21 @@ function formatDate(value) {
 }
 
 function normalizeSaleUnit(value) {
-  return String(value || '').toLowerCase() === 'pack' ? 'pack' : 'loose';
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'pack' || normalized.startsWith('pack') ? 'pack' : 'loose';
 }
 
 function getProductPackConfig(product) {
   const packSize = Math.max(1, Math.trunc(toNumber(product && product.packSize, 1)));
   const looseUnit = String((product && product.unit) || 'Unit').trim() || 'Unit';
   const loosePrice = round2(toNumber(product && product.loosePrice, product && product.retailPrice));
-  const packEnabled = Boolean(product && product.packEnabled) && packSize > 1;
+  const rawPackPrice = round2(
+    toNumber(
+      product && product.packPrice,
+      loosePrice * packSize
+    )
+  );
+  const packEnabled = (Boolean(product && product.packEnabled) || packSize > 1 || rawPackPrice > 0) && packSize > 1;
   const packPrice = round2(
     packEnabled
       ? toNumber(product && product.packPrice, loosePrice * packSize)
@@ -2273,18 +2280,39 @@ function resetPurchaseUnknownProductForm() {
   dom.purchaseUnknownProductReorderLevel.value = '';
 }
 
+function parseQuickPriceInput(value, fallback = NaN) {
+  const text = String(value === undefined || value === null ? '' : value).trim();
+  if (!text) {
+    return fallback;
+  }
+
+  const normalized = text.replace(',', '.');
+  const parsed = Number(normalized);
+  if (Number.isNaN(parsed) || !Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return parsed;
+}
+
 function getPurchaseProductPayload(input) {
+  const costPrice = round2(parseQuickPriceInput(input.costPrice, NaN));
+  const retailPrice = round2(parseQuickPriceInput(input.retailPrice, costPrice));
+  const wholesalePrice = round2(parseQuickPriceInput(input.wholesalePrice, retailPrice));
+  const wholesaleMinQtyRaw = parseQuickPriceInput(input.wholesaleMinQty, NaN);
+  const reorderLevelRaw = parseQuickPriceInput(input.reorderLevel, NaN);
+
   return {
     name: input.name,
     barcode: input.barcode,
     category: input.category,
     unit: input.unit,
-    costPrice: input.costPrice,
-    retailPrice: input.retailPrice,
-    wholesalePrice: input.wholesalePrice,
-    wholesaleMinQty: input.wholesaleMinQty,
+    costPrice,
+    retailPrice,
+    wholesalePrice,
+    wholesaleMinQty: Number.isFinite(wholesaleMinQtyRaw) ? round2(wholesaleMinQtyRaw) : '',
     stock: 0,
-    reorderLevel: input.reorderLevel
+    reorderLevel: Number.isFinite(reorderLevelRaw) ? round2(reorderLevelRaw) : ''
   };
 }
 

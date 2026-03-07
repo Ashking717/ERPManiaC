@@ -161,7 +161,10 @@ function normalizeProduct(product) {
   const fallbackCost = wholesalePrice > 0 ? wholesalePrice : retailPrice;
   const costPrice = round2(toNumber(product.costPrice, fallbackCost));
   const packSize = Math.max(1, Math.trunc(toNumber(product.packSize, 1)));
-  const packEnabled = Boolean(product.packEnabled) && packSize > 1;
+  const explicitPackEnabled = Boolean(product.packEnabled);
+  const rawPackPrice = round2(toNumber(product.packPrice, retailPrice * packSize));
+  const inferredPackEnabled = explicitPackEnabled || packSize > 1 || rawPackPrice > 0;
+  const packEnabled = inferredPackEnabled && packSize > 1;
   const packPrice = round2(toNumber(product.packPrice, retailPrice * packSize));
 
   return {
@@ -242,17 +245,33 @@ function normalizeInvoice(invoice) {
         }))
       : [],
     items: Array.isArray(invoice.items)
-      ? invoice.items.map((item) => ({
-          ...item,
-          qty: round2(toNumber(item.qty, 0)),
-          baseQty: round2(toNumber(item.baseQty, item.qty)),
-          saleUnit: String(item.saleUnit || '').toLowerCase() === 'pack' ? 'pack' : 'loose',
-          packSize: Math.max(1, Math.trunc(toNumber(item.packSize, 1))),
-          looseUnit: String(item.looseUnit || item.unit || '').trim(),
-          unitPrice: round2(toNumber(item.unitPrice, 0)),
-          lineTotal: round2(toNumber(item.lineTotal, 0)),
-          costPrice: round2(toNumber(item.costPrice, 0))
-        }))
+      ? invoice.items.map((item) => {
+          const qty = round2(toNumber(item.qty, 0));
+          const saleUnit = String(item.saleUnit || '').toLowerCase() === 'pack' ? 'pack' : 'loose';
+          const packSize = Math.max(1, Math.trunc(toNumber(item.packSize, 1)));
+          const baseQtyFromItem = round2(toNumber(item.baseQty, NaN));
+          const baseQty =
+            Number.isFinite(baseQtyFromItem) && baseQtyFromItem > 0
+              ? baseQtyFromItem
+              : saleUnit === 'pack'
+                ? round2(qty * packSize)
+                : qty;
+          const costPriceRaw = toNumber(item.costPrice, NaN);
+          const costPrice =
+            Number.isFinite(costPriceRaw) && costPriceRaw > 0 ? round2(costPriceRaw) : null;
+
+          return {
+            ...item,
+            qty,
+            baseQty,
+            saleUnit,
+            packSize,
+            looseUnit: String(item.looseUnit || item.unit || '').trim(),
+            unitPrice: round2(toNumber(item.unitPrice, 0)),
+            lineTotal: round2(toNumber(item.lineTotal, 0)),
+            costPrice
+          };
+        })
       : []
   };
 }

@@ -296,7 +296,8 @@ function productPackMeta(product) {
   const packSize = Math.max(1, Math.trunc(toNumber(product && product.packSize, 1)));
   const looseUnit = toText(product && product.unit) || 'Unit';
   const loosePrice = round2(toNumber(product && product.loosePrice, product && product.retailPrice));
-  const packEnabled = Boolean(product && product.packEnabled) && packSize > 1;
+  const rawPackPrice = round2(toNumber(product && product.packPrice, loosePrice * packSize));
+  const packEnabled = (Boolean(product && product.packEnabled) || packSize > 1 || rawPackPrice > 0) && packSize > 1;
   const packPrice = round2(
     packEnabled
       ? toNumber(product && product.packPrice, loosePrice * packSize)
@@ -343,6 +344,103 @@ function getPriceByChannel(product, channel, qty, saleUnit) {
     packSize: meta.packSize,
     looseUnit: meta.looseUnit
   };
+}
+
+function buildPurchaseCostTimeline(purchases) {
+  const timeline = new Map();
+
+  const allPurchases = Array.isArray(purchases) ? purchases : [];
+  for (const purchase of allPurchases) {
+    const purchaseTs = new Date(purchase && purchase.createdAt).getTime();
+    if (Number.isNaN(purchaseTs)) {
+      continue;
+    }
+
+    const items = Array.isArray(purchase && purchase.items) ? purchase.items : [];
+    for (const item of items) {
+      const productId = toText(item && item.productId);
+      const unitCost = round2(toNumber(item && item.unitCost, NaN));
+      if (!productId || !Number.isFinite(unitCost) || unitCost <= 0) {
+        continue;
+      }
+
+      const entries = timeline.get(productId) || [];
+      entries.push({ ts: purchaseTs, unitCost });
+      timeline.set(productId, entries);
+    }
+  }
+
+  for (const entries of timeline.values()) {
+    entries.sort((a, b) => a.ts - b.ts);
+  }
+
+  return timeline;
+}
+
+function findLatestPurchaseCostBefore(timeline, productId, atTs) {
+  if (!timeline || !productId || !Number.isFinite(atTs)) {
+    return NaN;
+  }
+
+  const entries = timeline.get(productId);
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return NaN;
+  }
+
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const row = entries[index];
+    if (row.ts <= atTs) {
+      return round2(toNumber(row.unitCost, NaN));
+    }
+  }
+
+  return NaN;
+}
+
+function resolveInvoiceItemBaseQty(item, productById) {
+  const baseQty = round2(toNumber(item && item.baseQty, NaN));
+  if (Number.isFinite(baseQty) && baseQty > 0) {
+    return baseQty;
+  }
+
+  const qty = round2(toNumber(item && item.qty, 0));
+  if (!Number.isFinite(qty) || qty <= 0) {
+    return 0;
+  }
+
+  const saleUnit = toText(item && item.saleUnit).toLowerCase();
+  if (saleUnit !== 'pack') {
+    return qty;
+  }
+
+  const itemPackSize = Math.max(1, Math.trunc(toNumber(item && item.packSize, 1)));
+  const productPackSize = Math.max(
+    1,
+    Math.trunc(toNumber(productById && productById.get(toText(item && item.productId))?.packSize, 1))
+  );
+  const packSize = itemPackSize > 1 ? itemPackSize : productPackSize;
+  return round2(qty * packSize);
+}
+
+function resolveInvoiceItemCostPrice(item, context) {
+  const explicit = round2(toNumber(item && item.costPrice, NaN));
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return explicit;
+  }
+
+  const productId = toText(item && item.productId);
+  const invoiceTs = Number.isFinite(context && context.invoiceTs) ? context.invoiceTs : NaN;
+  const timelineCost = findLatestPurchaseCostBefore(context && context.purchaseCostTimeline, productId, invoiceTs);
+  if (Number.isFinite(timelineCost) && timelineCost > 0) {
+    return timelineCost;
+  }
+
+  const fallbackProductCost = round2(toNumber(context && context.productById?.get(productId)?.costPrice, NaN));
+  if (Number.isFinite(fallbackProductCost) && fallbackProductCost > 0) {
+    return fallbackProductCost;
+  }
+
+  return 0;
 }
 
 function sortByTimeDesc(arr) {
@@ -534,6 +632,7 @@ function deriveInvoicePaymentStatus(total, paidAmount, balance) {
 
 function calculateMetricsForRange(data, start, end) {
   const productById = new Map(data.products.map((product) => [product.id, product]));
+  const purchaseCostTimeline = buildPurchaseCostTimeline(data.purchases);
 
   const scopedInvoices = data.invoices.filter((invoice) => isWithinRange(invoice.createdAt, start, end));
   const scopedPurchases = data.purchases.filter((purchase) => isWithinRange(purchase.createdAt, start, end));
@@ -559,14 +658,19 @@ function calculateMetricsForRange(data, start, end) {
   );
 
   let cogs = 0;
-    for (const invoice of scopedInvoices) {
-      const items = Array.isArray(invoice.items) ? invoice.items : [];
-      for (const item of items) {
-        const qty = toNumber(item.baseQty, toNumber(item.qty, 0));
-        const fallbackCost = toNumber(productById.get(item.productId)?.costPrice, 0);
-        const lineCost = toNumber(item.costPrice, fallbackCost);
-        cogs += qty * lineCost;
-      }
+  for (const invoice of scopedInvoices) {
+    const items = Array.isArray(invoice.items) ? invoice.items : [];
+    const invoiceTs = new Date(invoice.createdAt).getTime();
+
+    for (const item of items) {
+      const qty = resolveInvoiceItemBaseQty(item, productById);
+      const lineCost = resolveInvoiceItemCostPrice(item, {
+        productById,
+        purchaseCostTimeline,
+        invoiceTs
+      });
+      cogs += qty * lineCost;
+    }
   }
   cogs = round2(cogs);
 
@@ -2289,6 +2393,8 @@ function createErpService() {
     assertLicenseActive();
 
     const data = store.get();
+    const productById = new Map(data.products.map((product) => [product.id, product]));
+    const purchaseCostTimeline = buildPurchaseCostTimeline(data.purchases);
     const reportInput =
       payload && typeof payload === 'object' && !Array.isArray(payload)
         ? payload
@@ -2339,9 +2445,14 @@ function createErpService() {
 
       const items = Array.isArray(invoice.items) ? invoice.items : [];
       let cogs = 0;
+      const invoiceTs = new Date(invoice.createdAt).getTime();
       for (const item of items) {
-        const qty = toNumber(item.baseQty, toNumber(item.qty, 0));
-        const costPrice = toNumber(item.costPrice, 0);
+        const qty = resolveInvoiceItemBaseQty(item, productById);
+        const costPrice = resolveInvoiceItemCostPrice(item, {
+          productById,
+          purchaseCostTimeline,
+          invoiceTs
+        });
         cogs += qty * costPrice;
       }
       cogs = round2(cogs);
