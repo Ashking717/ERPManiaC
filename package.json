@@ -1,6 +1,6 @@
 {
   "name": "erpmania-grocery-erp",
-  "version": "2.0.1",
+  "version": "2.1.1",
   "description": "Offline Electron ERP app for grocery wholesale and retail billing",
   "main": "main.js",
   "author": "",
