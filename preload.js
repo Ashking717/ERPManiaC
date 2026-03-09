@@ -22,10 +22,13 @@ contextBridge.exposeInMainWorld('erpApi', {
   deleteSupplier: (supplierId) => ipcRenderer.invoke('erp:delete-supplier', supplierId),
 
   createInvoice: (payload) => ipcRenderer.invoke('erp:create-invoice', payload),
+  updateInvoice: (payload) => ipcRenderer.invoke('erp:update-invoice', payload),
   recordInvoicePayment: (payload) => ipcRenderer.invoke('erp:record-invoice-payment', payload),
   createPurchase: (payload) => ipcRenderer.invoke('erp:create-purchase', payload),
+  updatePurchase: (payload) => ipcRenderer.invoke('erp:update-purchase', payload),
   createSupplierPayment: (payload) => ipcRenderer.invoke('erp:create-supplier-payment', payload),
   createExpense: (payload) => ipcRenderer.invoke('erp:create-expense', payload),
+  updateExpense: (payload) => ipcRenderer.invoke('erp:update-expense', payload),
   extractEnglishOcr: (payload) => ipcRenderer.invoke('erp:extract-english-ocr', payload),
   getCustomerLedger: (customerId) => ipcRenderer.invoke('erp:get-customer-ledger', customerId),
   getSupplierLedger: (supplierId) => ipcRenderer.invoke('erp:get-supplier-ledger', supplierId),

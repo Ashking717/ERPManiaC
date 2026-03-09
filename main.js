@@ -336,16 +336,19 @@ function registerIpc() {
   ipcMain.handle('erp:delete-supplier', withResponse((supplierId) => erpService.deleteSupplier(supplierId)));
 
   ipcMain.handle('erp:create-invoice', withResponse((payload) => erpService.createInvoice(payload)));
+  ipcMain.handle('erp:update-invoice', withResponse((payload) => erpService.updateInvoice(payload)));
   ipcMain.handle(
     'erp:record-invoice-payment',
     withResponse((payload) => erpService.recordInvoicePayment(payload))
   );
   ipcMain.handle('erp:create-purchase', withResponse((payload) => erpService.createPurchase(payload)));
+  ipcMain.handle('erp:update-purchase', withResponse((payload) => erpService.updatePurchase(payload)));
   ipcMain.handle(
     'erp:create-supplier-payment',
     withResponse((payload) => erpService.createSupplierPayment(payload))
   );
   ipcMain.handle('erp:create-expense', withResponse((payload) => erpService.createExpense(payload)));
+  ipcMain.handle('erp:update-expense', withResponse((payload) => erpService.updateExpense(payload)));
   ipcMain.handle(
     'erp:extract-english-ocr',
     withResponse((payload) => erpService.extractEnglishOcr(payload))

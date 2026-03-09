@@ -197,6 +197,27 @@
 
           <article class="panel mt16">
             <header class="panel-head">
+              <h3>Interface Mode</h3>
+              <p>Choose optimized layout for desktop keyboard/mouse or touch POS screens.</p>
+            </header>
+
+            <form id="ui-mode-form" class="form-grid">
+              <label>
+                Mode
+                <select id="ui-mode-select">
+                  <option value="pc">PC (Keyboard + Mouse)</option>
+                  <option value="touch">Touch POS</option>
+                </select>
+              </label>
+
+              <div class="actions-row">
+                <button type="submit" class="btn primary" id="ui-mode-save-btn">Save Interface Mode</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="panel mt16">
+            <header class="panel-head">
               <h3>Google Drive Folder Backup</h3>
               <p>Use Google Drive Desktop sync folder for manual and auto backups.</p>
             </header>
@@ -384,8 +405,9 @@
               </label>
 
               <label>
-                Stock Qty
+                <span id="product-stock-label">Stock Qty (Loose)</span>
                 <input id="product-stock" type="number" min="0" step="0.01" required />
+                <small id="product-stock-hint" class="muted">Stored as loose/base units.</small>
               </label>
 
               <label>
@@ -603,7 +625,7 @@
                   <input id="supplier-payment-notes" placeholder="Optional payment note" />
                 </label>
 
-                <button type="button" class="btn primary" id="supplier-payment-btn">Record Payment</button>
+                <button type="button" class="btn primary" id="supplier-payment-btn">Record Pay</button>
               </div>
 
               <div class="table-wrap">
@@ -744,7 +766,10 @@
                 <p><span>Balance</span><strong id="purchase-balance-value">Rs 0.00</strong></p>
               </div>
 
-              <button type="button" class="btn success" id="purchase-submit-btn">Create Purchase</button>
+              <div class="actions-row">
+                <button type="button" class="btn success" id="purchase-submit-btn">Create Purchase</button>
+                <button type="button" class="btn subtle hidden" id="purchase-cancel-edit-btn">Cancel Edit</button>
+              </div>
             </article>
           </div>
 
@@ -764,6 +789,7 @@
                     <th>Paid</th>
                     <th>Balance</th>
                     <th>GST</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody id="purchases-body"></tbody>
@@ -829,6 +855,7 @@
 
                 <div class="actions-row">
                   <button type="submit" class="btn primary" id="expense-submit-btn">Record Expense</button>
+                  <button type="button" class="btn subtle hidden" id="expense-cancel-edit-btn">Cancel Edit</button>
                 </div>
               </form>
             </article>
@@ -849,6 +876,7 @@
                       <th>Paid To</th>
                       <th>Notes</th>
                       <th>Amount</th>
+                      <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody id="expenses-body"></tbody>
@@ -859,6 +887,123 @@
         </section>
 
         <section class="view" id="view-billing">
+          <div class="touch-pos-workspace" id="touch-pos-workspace">
+            <aside class="touch-pos-categories panel">
+              <header class="panel-head">
+                <h3>Categories</h3>
+              </header>
+              <div class="touch-pos-category-list" id="touch-pos-category-list"></div>
+            </aside>
+
+            <section class="touch-pos-products panel">
+              <header class="panel-head split">
+                <h3>Products</h3>
+                <div class="touch-pos-inline">
+                  <label class="touch-pos-field compact">
+                    Sale Unit
+                    <select id="touch-pos-sale-unit">
+                      <option value="loose">Loose</option>
+                      <option value="pack">Pack</option>
+                    </select>
+                  </label>
+                  <label class="touch-pos-field compact">
+                    Qty
+                    <input id="touch-pos-qty" type="number" min="0.01" step="0.01" value="1" />
+                  </label>
+                </div>
+              </header>
+
+              <div class="touch-pos-toolbar">
+                <label class="touch-pos-field">
+                  Search
+                  <input id="touch-pos-search" placeholder="Search name / SKU / barcode" />
+                </label>
+                <label class="touch-pos-field">
+                  Scan
+                  <input id="touch-pos-barcode" placeholder="Scan barcode and press Enter" />
+                </label>
+              </div>
+
+              <div class="touch-pos-product-grid" id="touch-pos-product-grid"></div>
+            </section>
+
+            <section class="touch-pos-cart panel">
+              <div class="touch-pos-total-card">
+                <p>Total Amount</p>
+                <strong id="touch-pos-total">Rs 0.00</strong>
+              </div>
+
+              <div class="touch-pos-meta-row">
+                <label class="touch-pos-field compact">
+                  Channel
+                  <select id="touch-pos-channel">
+                    <option value="retail">Retail</option>
+                    <option value="wholesale">Wholesale</option>
+                  </select>
+                </label>
+
+                <label class="touch-pos-field">
+                  Customer
+                  <select id="touch-pos-customer"></select>
+                </label>
+              </div>
+
+              <div class="touch-pos-cart-lines" id="touch-pos-cart-lines"></div>
+
+              <div class="touch-pos-summary">
+                <p><span>Sub Total</span><strong id="touch-pos-subtotal">Rs 0.00</strong></p>
+                <p><span>Balance</span><strong id="touch-pos-balance">Rs 0.00</strong></p>
+              </div>
+
+              <div class="touch-pos-payment-row">
+                <label class="touch-pos-field compact">
+                  Paid Amount
+                  <input id="touch-pos-paid" inputmode="decimal" placeholder="0.00" />
+                </label>
+                <label class="touch-pos-field compact">
+                  Payment
+                  <select id="touch-pos-payment-method">
+                    <option value="cash">Cash</option>
+                    <option value="bank">Bank</option>
+                    <option value="upi">UPI</option>
+                    <option value="card">Card</option>
+                    <option value="other">Other</option>
+                  </select>
+                </label>
+                <label class="touch-pos-field compact">
+                  Discount
+                  <input id="touch-pos-discount" type="number" min="0" step="0.01" value="0" />
+                </label>
+              </div>
+
+              <div class="touch-pos-keypad" id="touch-pos-keypad">
+                <button type="button" data-key="7">7</button>
+                <button type="button" data-key="8">8</button>
+                <button type="button" data-key="9">9</button>
+                <button type="button" data-key="back">BS</button>
+                <button type="button" data-key="4">4</button>
+                <button type="button" data-key="5">5</button>
+                <button type="button" data-key="6">6</button>
+                <button type="button" data-key="clear">C</button>
+                <button type="button" data-key="1">1</button>
+                <button type="button" data-key="2">2</button>
+                <button type="button" data-key="3">3</button>
+                <button type="button" data-key="+10">+10</button>
+                <button type="button" data-key="0">0</button>
+                <button type="button" data-key="00">00</button>
+                <button type="button" data-key=".">.</button>
+                <button type="button" data-key="+50">+50</button>
+                <button type="button" data-key="+100">+100</button>
+                <button type="button" data-key="full">Full</button>
+              </div>
+
+              <div class="touch-pos-action-row">
+                <button type="button" class="btn warn" id="touch-pos-clear-btn">Cancel</button>
+                <button type="button" class="btn success" id="touch-pos-create-btn">Create Invoice</button>
+              </div>
+            </section>
+          </div>
+
           <div class="grid-two billing-grid">
             <article class="panel">
               <header class="panel-head">
@@ -987,7 +1132,10 @@
                 <p><span>Balance</span><strong id="balance-value">Rs 0.00</strong></p>
               </div>
 
-              <button type="button" class="btn success" id="invoice-submit-btn">Create Invoice</button>
+              <div class="actions-row">
+                <button type="button" class="btn success" id="invoice-submit-btn">Create Invoice</button>
+                <button type="button" class="btn subtle hidden" id="invoice-cancel-edit-btn">Cancel Edit</button>
+              </div>
             </article>
           </div>
         </section>
@@ -1173,6 +1321,29 @@
           </select>
         </label>
 
+        <label class="inline-check">
+          <input type="checkbox" id="purchase-unknown-product-pack-enabled" />
+          <span>Enable Pack + Loose Sale</span>
+        </label>
+
+        <label>
+          Pack Size (Loose/Pack)
+          <input id="purchase-unknown-product-pack-size" type="number" min="2" step="1" value="1" disabled />
+        </label>
+
+        <label>
+          Pack Price (Retail)
+          <input
+            id="purchase-unknown-product-pack-price"
+            type="number"
+            min="0.01"
+            step="0.01"
+            value="0"
+            placeholder="Auto from retail x pack size"
+            disabled
+          />
+        </label>
+
         <label>
           Cost Price
           <input id="purchase-unknown-product-cost-price" type="number" min="0.01" step="0.01" required />
@@ -1342,6 +1513,29 @@
             <option value="Dozen">Dozen</option>
             <option value="Carton">Carton</option>
           </select>
+        </label>
+
+        <label class="inline-check">
+          <input type="checkbox" id="purchase-product-pack-enabled" />
+          <span>Enable Pack + Loose Sale</span>
+        </label>
+
+        <label>
+          Pack Size (Loose/Pack)
+          <input id="purchase-product-pack-size" type="number" min="2" step="1" value="1" disabled />
+        </label>
+
+        <label>
+          Pack Price (Retail)
+          <input
+            id="purchase-product-pack-price"
+            type="number"
+            min="0.01"
+            step="0.01"
+            value="0"
+            placeholder="Auto from retail x pack size"
+            disabled
+          />
         </label>
 
         <label>

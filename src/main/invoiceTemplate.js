@@ -69,9 +69,7 @@ function renderA4InvoiceHtml({ invoice, business }) {
           <td>${index + 1}</td>
           <td>
             <div class="item-name">${escapeHtml(item.name)}</div>
-            <div class="item-meta">SKU: ${escapeHtml(item.sku)}${
-              item.barcode ? ` | Barcode: ${escapeHtml(item.barcode)}` : ''
-            }</div>
+            ${item.barcode ? `<div class="item-meta">Barcode: ${escapeHtml(item.barcode)}</div>` : ''}
           </td>
           <td>${item.qty}</td>
           <td>${escapeHtml(item.unit)}</td>

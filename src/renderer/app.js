@@ -24,20 +24,27 @@ const state = {
   invoiceSearch: '',
   purchaseSearch: '',
   billingProductSearch: '',
+  touchPosCategory: 'all',
   expenseSearch: '',
   selectedLedgerCustomerId: '',
   selectedLedgerSupplierId: '',
   pendingPurchaseBarcode: '',
   purchaseOcrText: '',
-  businessLogoDataUrl: ''
+  businessLogoDataUrl: '',
+  editingPurchaseId: '',
+  editingExpenseId: '',
+  editingInvoiceId: ''
 };
 
 const dom = {};
 let toastTimer = null;
 const BARCODE_SCAN_IDLE_MS = 120;
 let billingBarcodeTimer = null;
+let touchPosBarcodeTimer = null;
 let purchaseBarcodeTimer = null;
 let themeAutoTimer = null;
+let touchTableLabelFrame = null;
+let touchTableObserver = null;
 const MAX_BUSINESS_LOGO_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_BUSINESS_LOGO_DATA_URL_LENGTH = 2800000;
 
@@ -179,6 +186,36 @@ function getDisplayUnit(product, saleUnit) {
   return config.looseUnit;
 }
 
+function getSelectedBillingSaleUnit() {
+  if (!dom.draftSaleUnit) {
+    return 'loose';
+  }
+
+  const selectedOption = dom.draftSaleUnit.options[dom.draftSaleUnit.selectedIndex];
+  const selectedValue = selectedOption ? selectedOption.value : dom.draftSaleUnit.value;
+  return normalizeSaleUnit(selectedValue);
+}
+
+function updateProductStockInputMode() {
+  if (!dom.productStockInput || !dom.productStockLabel || !dom.productStockHint || !dom.productPackEnabled) {
+    return;
+  }
+
+  if (!dom.productPackEnabled.checked) {
+    dom.productStockLabel.textContent = 'Stock Qty (Loose)';
+    dom.productStockHint.textContent = 'Stored as loose/base units.';
+    return;
+  }
+
+  const packSize = Math.max(2, Math.trunc(toNumber(dom.productPackSize && dom.productPackSize.value, 2)));
+  const packCount = round2(toNumber(dom.productStockInput.value, 0));
+  const looseQty = round2(packCount * packSize);
+  const unitText = String((dom.productUnitSelect && dom.productUnitSelect.value) || 'Unit').trim() || 'Unit';
+
+  dom.productStockLabel.textContent = 'Opening Stock (Packs)';
+  dom.productStockHint.textContent = `Loose stock = packs x size (${packCount} x ${packSize} = ${looseQty} ${unitText})`;
+}
+
 function findProductByBarcodeOrSku(code) {
   const normalized = String(code || '').trim();
   if (!normalized) {
@@ -194,32 +231,62 @@ function findProductByBarcodeOrSku(code) {
   );
 }
 
+function resolvePreferredBillingSaleUnit(product, preferredSaleUnit) {
+  const normalized = normalizeSaleUnit(preferredSaleUnit);
+  const config = getProductPackConfig(product);
+  return normalized === 'pack' && config.packEnabled ? 'pack' : 'loose';
+}
+
+function addBillingProductToDraft(product, qty, preferredSaleUnit) {
+  if (!product) {
+    showToast('Invalid product selected', 'error');
+    return false;
+  }
+  dom.draftProductId.value = product.id;
+  renderBillingSaleUnitOptions(product);
+  const saleUnit = resolvePreferredBillingSaleUnit(product, preferredSaleUnit);
+  dom.draftSaleUnit.value = saleUnit;
+  return addDraftItem(product.id, qty, saleUnit);
+}
+
+function processBillingBarcodeValue(barcodeValue, options = {}) {
+  const barcode = String(barcodeValue || '').trim();
+  if (!barcode) {
+    return false;
+  }
+
+  const product = findProductByBarcodeOrSku(barcode);
+  if (!product) {
+    showToast(`No product found for barcode ${barcode}`, 'error');
+    return false;
+  }
+
+  const qty = round2(toNumber(options.qty, toNumber(dom.draftQty.value, 1)));
+  const preferredSaleUnit =
+    options.saleUnit ||
+    (dom.touchPosSaleUnit && dom.touchPosSaleUnit.value ? dom.touchPosSaleUnit.value : getSelectedBillingSaleUnit());
+
+  const added = addBillingProductToDraft(product, qty, preferredSaleUnit);
+  if (added) {
+    showToast(`Added ${product.name}`);
+  }
+
+  return added;
+}
+
 function processBillingBarcodeScan() {
   const barcode = dom.barcodeInput.value.trim();
   if (!barcode) {
     return;
   }
 
-  const product = findProductByBarcodeOrSku(barcode);
-  if (!product) {
-    showToast(`No product found for barcode ${barcode}`, 'error');
-    dom.barcodeInput.value = '';
-    dom.barcodeInput.focus();
-    return;
-  }
-
-  dom.draftProductId.value = product.id;
-  renderBillingSaleUnitOptions(product);
-
-  const qty = toNumber(dom.draftQty.value, 1);
-  const saleUnit = normalizeSaleUnit(dom.draftSaleUnit.value);
-  const added = addDraftItem(product.id, qty, saleUnit);
-  if (added) {
-    showToast(`Added ${product.name}`);
-  }
+  processBillingBarcodeValue(barcode, {
+    qty: toNumber(dom.draftQty.value, 1),
+    saleUnit: getSelectedBillingSaleUnit()
+  });
 
   dom.barcodeInput.value = '';
-  dom.barcodeInput.focus();
+  focusBillingScannerInput();
 }
 
 function processPurchaseBarcodeScan() {
@@ -257,6 +324,22 @@ function processPurchaseBarcodeScan() {
 
 function todayKey() {
   const dt = new Date();
+  const year = dt.getFullYear();
+  const month = String(dt.getMonth() + 1).padStart(2, '0');
+  const day = String(dt.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function toDateInputValue(value, fallback = '') {
+  if (!value) {
+    return fallback;
+  }
+
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) {
+    return fallback;
+  }
+
   const year = dt.getFullYear();
   const month = String(dt.getMonth() + 1).padStart(2, '0');
   const day = String(dt.getDate()).padStart(2, '0');
@@ -410,10 +493,16 @@ function normalizeThemeMode(value) {
   return 'auto';
 }
 
+function normalizeUiMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  return mode === 'touch' ? 'touch' : 'pc';
+}
+
 function normalizeUiSettingsForUi(settings) {
   const source = settings && typeof settings === 'object' ? settings : {};
   return {
     themeMode: normalizeThemeMode(source.themeMode),
+    uiMode: normalizeUiMode(source.uiMode),
     thermalAutoPrintEnabled: Boolean(source.thermalAutoPrintEnabled),
     thermalPrinterName: String(source.thermalPrinterName || '').trim()
   };
@@ -494,6 +583,102 @@ function applyThemeMode(modeInput) {
     }
     setThemeLiveLabel('auto', nextTheme);
   }, 60 * 1000);
+}
+
+function applyUiMode(modeInput) {
+  const mode = normalizeUiMode(modeInput);
+  document.documentElement.dataset.uiMode = mode;
+  document.body.classList.toggle('touch-ui', mode === 'touch');
+
+  if (dom.uiModeSelect && dom.uiModeSelect.value !== mode) {
+    dom.uiModeSelect.value = mode;
+  }
+
+  scheduleTouchTableLabels();
+}
+
+function isTouchUiModeActive() {
+  return normalizeUiMode(state.uiSettings && state.uiSettings.uiMode) === 'touch';
+}
+
+function focusBillingScannerInput() {
+  window.requestAnimationFrame(() => {
+    const isTouchMode = normalizeUiMode(document.documentElement.dataset.uiMode) === 'touch';
+    if (isTouchMode && dom.touchPosBarcode) {
+      dom.touchPosBarcode.focus();
+      return;
+    }
+
+    if (dom.barcodeInput) {
+      dom.barcodeInput.focus();
+    }
+  });
+}
+
+function applyTouchTableLabels() {
+  if (normalizeUiMode(document.documentElement.dataset.uiMode) !== 'touch') {
+    return;
+  }
+
+  document.querySelectorAll('.table-wrap table').forEach((table) => {
+    const headers = Array.from(table.querySelectorAll('thead th')).map((th) =>
+      String(th.textContent || '').trim()
+    );
+    if (!headers.length) {
+      return;
+    }
+
+    table.querySelectorAll('tbody tr').forEach((row) => {
+      const cells = Array.from(row.querySelectorAll('td'));
+      if (!cells.length) {
+        return;
+      }
+
+      const singleCellRow = cells.length === 1;
+      cells.forEach((cell, index) => {
+        if (singleCellRow || Number(cell.colSpan || 1) > 1 || cell.classList.contains('empty')) {
+          cell.removeAttribute('data-label');
+          return;
+        }
+
+        const header = headers[index] || '';
+        if (header) {
+          cell.setAttribute('data-label', header);
+        } else {
+          cell.removeAttribute('data-label');
+        }
+      });
+    });
+  });
+}
+
+function scheduleTouchTableLabels() {
+  if (touchTableLabelFrame) {
+    window.cancelAnimationFrame(touchTableLabelFrame);
+  }
+
+  touchTableLabelFrame = window.requestAnimationFrame(() => {
+    touchTableLabelFrame = null;
+    applyTouchTableLabels();
+  });
+}
+
+function ensureTouchTableObserver() {
+  if (touchTableObserver || !document.body) {
+    return;
+  }
+
+  touchTableObserver = new MutationObserver(() => {
+    if (normalizeUiMode(document.documentElement.dataset.uiMode) !== 'touch') {
+      return;
+    }
+    scheduleTouchTableLabels();
+  });
+
+  touchTableObserver.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
 }
 
 function showToast(message, type = '') {
@@ -581,6 +766,9 @@ function cacheDom() {
   dom.businessLogoEmpty = document.getElementById('business-logo-empty');
   dom.businessLogoClearBtn = document.getElementById('business-logo-clear-btn');
   dom.businessSaveBtn = document.getElementById('business-save-btn');
+  dom.uiModeForm = document.getElementById('ui-mode-form');
+  dom.uiModeSelect = document.getElementById('ui-mode-select');
+  dom.uiModeSaveBtn = document.getElementById('ui-mode-save-btn');
   dom.backupForm = document.getElementById('backup-form');
   dom.backupEnabled = document.getElementById('backup-enabled');
   dom.backupAutoEnabled = document.getElementById('backup-auto-enabled');
@@ -608,6 +796,10 @@ function cacheDom() {
   dom.productPackSize = document.getElementById('product-pack-size');
   dom.productPackPrice = document.getElementById('product-pack-price');
   dom.productLoosePrice = document.getElementById('product-loose-price');
+  dom.productStockInput = document.getElementById('product-stock');
+  dom.productStockLabel = document.getElementById('product-stock-label');
+  dom.productStockHint = document.getElementById('product-stock-hint');
+  dom.productUnitSelect = document.getElementById('product-unit');
 
   dom.customerForm = document.getElementById('customer-form');
   dom.customerBody = document.getElementById('customers-body');
@@ -653,6 +845,7 @@ function cacheDom() {
   dom.purchaseTotalValue = document.getElementById('purchase-total-value');
   dom.purchaseBalanceValue = document.getElementById('purchase-balance-value');
   dom.purchaseSubmitBtn = document.getElementById('purchase-submit-btn');
+  dom.purchaseCancelEditBtn = document.getElementById('purchase-cancel-edit-btn');
   dom.purchaseSearch = document.getElementById('purchase-search');
   dom.purchasesBody = document.getElementById('purchases-body');
   dom.openPurchaseSupplierModalBtn = document.getElementById('open-purchase-supplier-modal-btn');
@@ -673,6 +866,9 @@ function cacheDom() {
   dom.purchaseProductBarcode = document.getElementById('purchase-product-barcode');
   dom.purchaseProductCategory = document.getElementById('purchase-product-category');
   dom.purchaseProductUnit = document.getElementById('purchase-product-unit');
+  dom.purchaseProductPackEnabled = document.getElementById('purchase-product-pack-enabled');
+  dom.purchaseProductPackSize = document.getElementById('purchase-product-pack-size');
+  dom.purchaseProductPackPrice = document.getElementById('purchase-product-pack-price');
   dom.purchaseProductCostPrice = document.getElementById('purchase-product-cost-price');
   dom.purchaseProductRetailPrice = document.getElementById('purchase-product-retail-price');
   dom.purchaseProductWholesalePrice = document.getElementById('purchase-product-wholesale-price');
@@ -686,6 +882,9 @@ function cacheDom() {
   dom.purchaseUnknownProductName = document.getElementById('purchase-unknown-product-name');
   dom.purchaseUnknownProductCategory = document.getElementById('purchase-unknown-product-category');
   dom.purchaseUnknownProductUnit = document.getElementById('purchase-unknown-product-unit');
+  dom.purchaseUnknownProductPackEnabled = document.getElementById('purchase-unknown-product-pack-enabled');
+  dom.purchaseUnknownProductPackSize = document.getElementById('purchase-unknown-product-pack-size');
+  dom.purchaseUnknownProductPackPrice = document.getElementById('purchase-unknown-product-pack-price');
   dom.purchaseUnknownProductCostPrice = document.getElementById('purchase-unknown-product-cost-price');
   dom.purchaseUnknownProductRetailPrice = document.getElementById('purchase-unknown-product-retail-price');
   dom.purchaseUnknownProductWholesalePrice = document.getElementById(
@@ -714,6 +913,7 @@ function cacheDom() {
   dom.expensePaidTo = document.getElementById('expense-paid-to');
   dom.expenseNotes = document.getElementById('expense-notes');
   dom.expenseSubmitBtn = document.getElementById('expense-submit-btn');
+  dom.expenseCancelEditBtn = document.getElementById('expense-cancel-edit-btn');
   dom.expenseSearch = document.getElementById('expense-search');
   dom.expensesBody = document.getElementById('expenses-body');
 
@@ -744,6 +944,25 @@ function cacheDom() {
   dom.draftQty = document.getElementById('draft-qty');
   dom.addItemBtn = document.getElementById('add-item-btn');
   dom.draftItemsBody = document.getElementById('draft-items-body');
+  dom.touchPosWorkspace = document.getElementById('touch-pos-workspace');
+  dom.touchPosCategoryList = document.getElementById('touch-pos-category-list');
+  dom.touchPosProductGrid = document.getElementById('touch-pos-product-grid');
+  dom.touchPosCartLines = document.getElementById('touch-pos-cart-lines');
+  dom.touchPosSearch = document.getElementById('touch-pos-search');
+  dom.touchPosBarcode = document.getElementById('touch-pos-barcode');
+  dom.touchPosSaleUnit = document.getElementById('touch-pos-sale-unit');
+  dom.touchPosQty = document.getElementById('touch-pos-qty');
+  dom.touchPosChannel = document.getElementById('touch-pos-channel');
+  dom.touchPosCustomer = document.getElementById('touch-pos-customer');
+  dom.touchPosPaid = document.getElementById('touch-pos-paid');
+  dom.touchPosPaymentMethod = document.getElementById('touch-pos-payment-method');
+  dom.touchPosDiscount = document.getElementById('touch-pos-discount');
+  dom.touchPosTotal = document.getElementById('touch-pos-total');
+  dom.touchPosSubtotal = document.getElementById('touch-pos-subtotal');
+  dom.touchPosBalance = document.getElementById('touch-pos-balance');
+  dom.touchPosKeypad = document.getElementById('touch-pos-keypad');
+  dom.touchPosClearBtn = document.getElementById('touch-pos-clear-btn');
+  dom.touchPosCreateBtn = document.getElementById('touch-pos-create-btn');
 
   dom.subtotalValue = document.getElementById('subtotal-value');
   dom.discountValue = document.getElementById('discount-value');
@@ -751,6 +970,7 @@ function cacheDom() {
   dom.totalValue = document.getElementById('total-value');
   dom.balanceValue = document.getElementById('balance-value');
   dom.invoiceSubmitBtn = document.getElementById('invoice-submit-btn');
+  dom.invoiceCancelEditBtn = document.getElementById('invoice-cancel-edit-btn');
 
   dom.invoiceSearch = document.getElementById('invoice-search');
   dom.invoicesBody = document.getElementById('invoices-body');
@@ -944,6 +1164,76 @@ function bindThemeMode() {
       setStatus(previousStatus);
       showToast(error.message, 'error');
     }
+  });
+}
+
+function bindUiMode() {
+  if (!dom.uiModeForm || !dom.uiModeSelect) {
+    return;
+  }
+
+  let uiModeSaveInFlight = false;
+
+  const persistUiMode = async (nextUiMode, options = {}) => {
+    const { notify = true } = options;
+    const previousSettings = normalizeUiSettingsForUi(state.uiSettings);
+    const previousStatus = dom.statusPill.textContent;
+    const normalizedNextMode = normalizeUiMode(nextUiMode);
+
+    if (normalizedNextMode === previousSettings.uiMode) {
+      applyUiMode(normalizedNextMode);
+      return true;
+    }
+
+    if (uiModeSaveInFlight) {
+      return false;
+    }
+
+    uiModeSaveInFlight = true;
+    state.uiSettings = {
+      ...previousSettings,
+      uiMode: normalizedNextMode
+    };
+    applyUiMode(normalizedNextMode);
+
+    try {
+      setStatus('Saving interface mode...');
+      const updated = await invoke('upsertUiSettings', { uiMode: normalizedNextMode });
+      state.uiSettings = normalizeUiSettingsForUi(
+        updated || {
+          ...previousSettings,
+          uiMode: normalizedNextMode
+        }
+      );
+      renderUiSettings();
+      if (notify) {
+        showToast('Interface mode updated');
+      }
+      if (normalizedNextMode === 'touch') {
+        switchView('billing');
+      }
+      setStatus(previousStatus);
+      return true;
+    } catch (error) {
+      state.uiSettings = previousSettings;
+      renderUiSettings();
+      setStatus(previousStatus);
+      showToast(error.message, 'error');
+      return false;
+    } finally {
+      uiModeSaveInFlight = false;
+    }
+  };
+
+  dom.uiModeSelect.addEventListener('change', () => {
+    const nextUiMode = normalizeUiMode(dom.uiModeSelect.value);
+    persistUiMode(nextUiMode, { notify: false });
+  });
+
+  dom.uiModeForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const nextUiMode = normalizeUiMode(dom.uiModeSelect.value);
+    await persistUiMode(nextUiMode, { notify: true });
   });
 }
 
@@ -1415,12 +1705,22 @@ function bindProducts() {
       dom.productPackSize.value = '2';
     }
     suggestPackPrice();
+    updateProductStockInputMode();
   };
 
   if (dom.productPackEnabled) {
     dom.productPackEnabled.addEventListener('change', syncProductPackFields);
-    dom.productPackSize.addEventListener('input', suggestPackPrice);
+    dom.productPackSize.addEventListener('input', () => {
+      suggestPackPrice();
+      updateProductStockInputMode();
+    });
     dom.productLoosePrice.addEventListener('input', suggestPackPrice);
+    if (dom.productStockInput) {
+      dom.productStockInput.addEventListener('input', updateProductStockInputMode);
+    }
+    if (dom.productUnitSelect) {
+      dom.productUnitSelect.addEventListener('change', updateProductStockInputMode);
+    }
     syncProductPackFields();
   }
 
@@ -1464,6 +1764,7 @@ function bindProducts() {
         wholesalePrice: dom.productForm.querySelector('#product-wholesale-price').value,
         wholesaleMinQty: dom.productForm.querySelector('#product-wholesale-min-qty').value,
         stock: dom.productForm.querySelector('#product-stock').value,
+        stockMode: dom.productPackEnabled.checked ? 'pack' : 'loose',
         reorderLevel: dom.productForm.querySelector('#product-reorder-level').value
       };
 
@@ -1745,6 +2046,20 @@ function bindPurchases() {
     });
   }
 
+  if (dom.purchaseProductPackEnabled) {
+    dom.purchaseProductPackEnabled.addEventListener('change', syncPurchaseProductPackFields);
+    dom.purchaseProductPackSize.addEventListener('input', syncPurchaseProductPackFields);
+    dom.purchaseProductRetailPrice.addEventListener('input', syncPurchaseProductPackFields);
+    syncPurchaseProductPackFields();
+  }
+
+  if (dom.purchaseUnknownProductPackEnabled) {
+    dom.purchaseUnknownProductPackEnabled.addEventListener('change', syncPurchaseUnknownPackFields);
+    dom.purchaseUnknownProductPackSize.addEventListener('input', syncPurchaseUnknownPackFields);
+    dom.purchaseUnknownProductRetailPrice.addEventListener('input', syncPurchaseUnknownPackFields);
+    syncPurchaseUnknownPackFields();
+  }
+
   dom.purchaseGstEnabled.addEventListener('change', () => {
     dom.purchaseGstRate.disabled = !dom.purchaseGstEnabled.checked;
     if (!dom.purchaseGstEnabled.checked) {
@@ -1932,11 +2247,25 @@ function bindPurchases() {
     };
 
     try {
-      setStatus('Creating purchase...');
-      const purchase = await invoke('createPurchase', payload);
+      const isEdit = Boolean(state.editingPurchaseId);
+      const method = isEdit ? 'updatePurchase' : 'createPurchase';
+      const actionText = isEdit ? 'Updating purchase...' : 'Creating purchase...';
+      const requestPayload = isEdit
+        ? {
+            ...payload,
+            id: state.editingPurchaseId
+          }
+        : payload;
+
+      setStatus(actionText);
+      const purchase = await invoke(method, requestPayload);
       clearPurchaseDraft();
       await reloadData();
-      showToast(`Purchase ${purchase.purchaseNo} created`);
+      showToast(
+        isEdit
+          ? `Purchase ${purchase.purchaseNo} updated`
+          : `Purchase ${purchase.purchaseNo} created`
+      );
       setStatus('Live');
     } catch (error) {
       setStatus('Live');
@@ -1944,9 +2273,31 @@ function bindPurchases() {
     }
   });
 
+  if (dom.purchaseCancelEditBtn) {
+    dom.purchaseCancelEditBtn.addEventListener('click', () => {
+      clearPurchaseDraft();
+      dom.purchaseBarcodeInput.focus();
+    });
+  }
+
   dom.purchaseSearch.addEventListener('input', () => {
     state.purchaseSearch = dom.purchaseSearch.value.trim().toLowerCase();
     renderPurchases();
+  });
+
+  dom.purchasesBody.addEventListener('click', (event) => {
+    const editBtn = event.target.closest('button[data-edit-purchase-id]');
+    if (!editBtn) {
+      return;
+    }
+
+    const purchase = state.purchases.find((entry) => entry.id === editBtn.dataset.editPurchaseId);
+    if (!purchase) {
+      showToast('Purchase not found', 'error');
+      return;
+    }
+
+    startPurchaseEdit(purchase);
   });
 
   dom.purchaseSupplierForm.addEventListener('submit', async (event) => {
@@ -1990,6 +2341,9 @@ function bindPurchases() {
         barcode: dom.purchaseProductBarcode.value,
         category: dom.purchaseProductCategory.value,
         unit: dom.purchaseProductUnit.value,
+        packEnabled: dom.purchaseProductPackEnabled.checked,
+        packSize: dom.purchaseProductPackSize.value,
+        packPrice: dom.purchaseProductPackPrice.value,
         costPrice: dom.purchaseProductCostPrice.value,
         retailPrice: dom.purchaseProductRetailPrice.value,
         wholesalePrice: dom.purchaseProductWholesalePrice.value,
@@ -2041,6 +2395,9 @@ function bindPurchases() {
             barcode,
             category: dom.purchaseUnknownProductCategory.value,
             unit: dom.purchaseUnknownProductUnit.value,
+            packEnabled: dom.purchaseUnknownProductPackEnabled.checked,
+            packSize: dom.purchaseUnknownProductPackSize.value,
+            packPrice: dom.purchaseUnknownProductPackPrice.value,
             costPrice: dom.purchaseUnknownProductCostPrice.value,
             retailPrice: dom.purchaseUnknownProductRetailPrice.value,
             wholesalePrice: dom.purchaseUnknownProductWholesalePrice.value,
@@ -2078,17 +2435,27 @@ function bindExpenses() {
     };
 
     try {
-      setStatus('Recording expense...');
-      const expense = await invoke('createExpense', payload);
+      const isEdit = Boolean(state.editingExpenseId);
+      const method = isEdit ? 'updateExpense' : 'createExpense';
+      const actionText = isEdit ? 'Updating expense...' : 'Recording expense...';
+      const requestPayload = isEdit
+        ? {
+            ...payload,
+            id: state.editingExpenseId
+          }
+        : payload;
 
-      dom.expenseAmount.value = '';
-      dom.expensePaymentMethod.value = 'cash';
-      dom.expensePaidTo.value = '';
-      dom.expenseNotes.value = '';
-      dom.expenseDate.value = todayKey();
+      setStatus(actionText);
+      const expense = await invoke(method, requestPayload);
+
+      resetExpenseForm();
 
       await reloadData();
-      showToast(`Expense ${expense.expenseNo} recorded`);
+      showToast(
+        isEdit
+          ? `Expense ${expense.expenseNo} updated`
+          : `Expense ${expense.expenseNo} recorded`
+      );
       setStatus('Live');
       dom.expenseAmount.focus();
     } catch (error) {
@@ -2100,6 +2467,28 @@ function bindExpenses() {
   dom.expenseSearch.addEventListener('input', () => {
     state.expenseSearch = dom.expenseSearch.value.trim().toLowerCase();
     renderExpenses();
+  });
+
+  if (dom.expenseCancelEditBtn) {
+    dom.expenseCancelEditBtn.addEventListener('click', () => {
+      resetExpenseForm();
+      dom.expenseAmount.focus();
+    });
+  }
+
+  dom.expensesBody.addEventListener('click', (event) => {
+    const editBtn = event.target.closest('button[data-edit-expense-id]');
+    if (!editBtn) {
+      return;
+    }
+
+    const expense = state.expenses.find((entry) => entry.id === editBtn.dataset.editExpenseId);
+    if (!expense) {
+      showToast('Expense not found', 'error');
+      return;
+    }
+
+    startExpenseEdit(expense);
   });
 }
 
@@ -2198,6 +2587,242 @@ function bindBilling() {
     }
   });
 
+  const syncTouchPaidToInvoice = (nextValue) => {
+    if (!dom.touchPosPaid) {
+      return;
+    }
+    dom.touchPosPaid.value = String(nextValue === undefined || nextValue === null ? '' : nextValue);
+    dom.invoicePaid.value = dom.touchPosPaid.value;
+    dom.invoicePaid.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+
+  const currentInvoiceTotal = () =>
+    round2(toNumber(String(dom.totalValue.textContent || '').replace(/[^0-9.-]/g, ''), 0));
+
+  if (dom.touchPosChannel) {
+    dom.touchPosChannel.addEventListener('change', () => {
+      dom.invoiceChannel.value = dom.touchPosChannel.value;
+      dom.invoiceChannel.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  }
+
+  if (dom.touchPosCustomer) {
+    dom.touchPosCustomer.addEventListener('change', () => {
+      dom.invoiceCustomer.value = dom.touchPosCustomer.value;
+      renderDraftItems();
+    });
+  }
+
+  if (dom.touchPosSearch) {
+    dom.touchPosSearch.addEventListener('input', () => {
+      state.billingProductSearch = dom.touchPosSearch.value.trim().toLowerCase();
+      dom.billingProductSearch.value = dom.touchPosSearch.value;
+      renderBillingProductOptions();
+    });
+
+    dom.touchPosSearch.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') {
+        return;
+      }
+      event.preventDefault();
+      const firstProduct = getTouchPosFilteredProducts()[0];
+      if (!firstProduct) {
+        return;
+      }
+      const qty = round2(toNumber(dom.touchPosQty && dom.touchPosQty.value, 1));
+      const saleUnit = normalizeSaleUnit(dom.touchPosSaleUnit && dom.touchPosSaleUnit.value);
+      addBillingProductToDraft(firstProduct, qty, saleUnit);
+    });
+  }
+
+  if (dom.touchPosDiscount) {
+    dom.touchPosDiscount.addEventListener('input', () => {
+      dom.invoiceDiscount.value = dom.touchPosDiscount.value;
+      dom.invoiceDiscount.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+
+  if (dom.touchPosPaymentMethod) {
+    dom.touchPosPaymentMethod.addEventListener('change', () => {
+      dom.invoicePaidMethod.value = normalizePaymentMethod(dom.touchPosPaymentMethod.value);
+    });
+  }
+
+  if (dom.touchPosPaid) {
+    dom.touchPosPaid.addEventListener('input', () => {
+      syncTouchPaidToInvoice(dom.touchPosPaid.value);
+    });
+  }
+
+  const isTouchPosDigitKey = (value) => /^[0-9]$/.test(value) || value === '00';
+  const shouldResetTouchPaidOnDigit = (currentText, key) =>
+    isTouchPosDigitKey(key) && /^\d+\.\d{2}$/.test(String(currentText || ''));
+
+  if (dom.touchPosKeypad) {
+    dom.touchPosKeypad.addEventListener('click', (event) => {
+      const key = event.target.closest('button[data-key]')?.dataset.key;
+      if (!key) {
+        return;
+      }
+
+      const currentText = dom.touchPosPaid ? dom.touchPosPaid.value.trim() : '';
+      if (key === 'back') {
+        syncTouchPaidToInvoice(currentText.slice(0, -1));
+        return;
+      }
+      if (key === 'clear') {
+        syncTouchPaidToInvoice('');
+        return;
+      }
+      if (key === 'full') {
+        syncTouchPaidToInvoice(currentInvoiceTotal().toFixed(2));
+        return;
+      }
+      if (key === '+10' || key === '+50' || key === '+100') {
+        const increment = Number(key.slice(1));
+        const nextValue = round2(toNumber(currentText, 0) + increment);
+        syncTouchPaidToInvoice(nextValue.toFixed(2));
+        return;
+      }
+
+      if (shouldResetTouchPaidOnDigit(currentText, key)) {
+        syncTouchPaidToInvoice(key === '00' ? '0' : key);
+        return;
+      }
+
+      if (key === '.') {
+        if (currentText.includes('.')) {
+          return;
+        }
+        syncTouchPaidToInvoice(currentText ? `${currentText}.` : '0.');
+        return;
+      }
+
+      syncTouchPaidToInvoice(`${currentText}${key}`);
+    });
+  }
+
+  if (dom.touchPosBarcode) {
+    dom.touchPosBarcode.addEventListener('input', () => {
+      if (touchPosBarcodeTimer) {
+        clearTimeout(touchPosBarcodeTimer);
+        touchPosBarcodeTimer = null;
+      }
+
+      const barcode = dom.touchPosBarcode.value.trim();
+      if (!barcode) {
+        return;
+      }
+
+      touchPosBarcodeTimer = window.setTimeout(() => {
+        touchPosBarcodeTimer = null;
+        const qty = round2(toNumber(dom.touchPosQty && dom.touchPosQty.value, 1));
+        const saleUnit = normalizeSaleUnit(dom.touchPosSaleUnit && dom.touchPosSaleUnit.value);
+        const added = processBillingBarcodeValue(barcode, { qty, saleUnit });
+        if (added) {
+          dom.touchPosBarcode.value = '';
+          dom.touchPosBarcode.focus();
+        }
+      }, BARCODE_SCAN_IDLE_MS);
+    });
+
+    dom.touchPosBarcode.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') {
+        return;
+      }
+      event.preventDefault();
+      if (touchPosBarcodeTimer) {
+        clearTimeout(touchPosBarcodeTimer);
+        touchPosBarcodeTimer = null;
+      }
+      const barcode = dom.touchPosBarcode.value.trim();
+      const qty = round2(toNumber(dom.touchPosQty && dom.touchPosQty.value, 1));
+      const saleUnit = normalizeSaleUnit(dom.touchPosSaleUnit && dom.touchPosSaleUnit.value);
+      const added = processBillingBarcodeValue(barcode, { qty, saleUnit });
+      if (added) {
+        dom.touchPosBarcode.value = '';
+        dom.touchPosBarcode.focus();
+      }
+    });
+  }
+
+  if (dom.touchPosCategoryList) {
+    dom.touchPosCategoryList.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-touch-category]');
+      if (!button) {
+        return;
+      }
+      state.touchPosCategory = button.dataset.touchCategory || 'all';
+      renderTouchPosWorkspace();
+    });
+  }
+
+  if (dom.touchPosProductGrid) {
+    dom.touchPosProductGrid.addEventListener('click', (event) => {
+      const card = event.target.closest('button[data-touch-product-id]');
+      if (!card) {
+        return;
+      }
+      const product = state.products.find((entry) => entry.id === card.dataset.touchProductId);
+      if (!product) {
+        return;
+      }
+      const qty = round2(toNumber(dom.touchPosQty && dom.touchPosQty.value, 1));
+      const saleUnit = normalizeSaleUnit(dom.touchPosSaleUnit && dom.touchPosSaleUnit.value);
+      addBillingProductToDraft(product, qty, saleUnit);
+    });
+  }
+
+  if (dom.touchPosCartLines) {
+    dom.touchPosCartLines.addEventListener('click', (event) => {
+      const removeButton = event.target.closest('button[data-touch-line-remove]');
+      if (removeButton) {
+        const index = Number(removeButton.dataset.touchLineRemove);
+        if (!Number.isNaN(index) && state.draftItems[index]) {
+          state.draftItems.splice(index, 1);
+          renderDraftItems();
+        }
+        return;
+      }
+
+      const incButton = event.target.closest('button[data-touch-line-inc]');
+      if (incButton) {
+        const index = Number(incButton.dataset.touchLineInc);
+        if (!Number.isNaN(index) && state.draftItems[index]) {
+          updateDraftItemQuantity(index, round2(state.draftItems[index].qty + 1));
+        }
+        return;
+      }
+
+      const decButton = event.target.closest('button[data-touch-line-dec]');
+      if (decButton) {
+        const index = Number(decButton.dataset.touchLineDec);
+        if (Number.isNaN(index) || !state.draftItems[index]) {
+          return;
+        }
+        const nextQty = round2(state.draftItems[index].qty - 1);
+        if (nextQty <= 0) {
+          state.draftItems.splice(index, 1);
+          renderDraftItems();
+          return;
+        }
+        updateDraftItemQuantity(index, nextQty);
+      }
+    });
+  }
+
+  if (dom.touchPosClearBtn) {
+    dom.touchPosClearBtn.addEventListener('click', () => {
+      clearInvoiceDraft();
+    });
+  }
+
+  if (dom.touchPosCreateBtn) {
+    dom.touchPosCreateBtn.addEventListener('click', () => {
+      dom.invoiceSubmitBtn.click();
+    });
+  }
+
   dom.barcodeInput.addEventListener('input', () => {
     if (billingBarcodeTimer) {
       clearTimeout(billingBarcodeTimer);
@@ -2250,44 +2875,7 @@ function bindBilling() {
     }
 
     const index = Number(input.dataset.qtyIndex);
-    const nextQty = round2(toNumber(input.value, NaN));
-
-    if (Number.isNaN(index) || !state.draftItems[index]) {
-      return;
-    }
-
-    if (!Number.isFinite(nextQty) || nextQty <= 0) {
-      showToast('Quantity must be greater than 0', 'error');
-      renderDraftItems();
-      return;
-    }
-
-    const line = state.draftItems[index];
-    const product = state.products.find((entry) => entry.id === line.productId);
-    if (!product) {
-      showToast('Invalid product in draft', 'error');
-      return;
-    }
-
-    const nextBaseQty = toBaseQty(product, nextQty, line.saleUnit);
-    const otherBaseQty = round2(
-      state.draftItems.reduce((sum, current, currentIndex) => {
-        if (currentIndex === index || current.productId !== line.productId) {
-          return sum;
-        }
-        return round2(sum + toBaseQty(product, current.qty, current.saleUnit));
-      }, 0)
-    );
-    const totalBaseQty = round2(otherBaseQty + nextBaseQty);
-
-    if (totalBaseQty > product.stock) {
-      showToast(`Only ${product.stock} loose units available for ${product.name}`, 'error');
-      renderDraftItems();
-      return;
-    }
-
-    line.qty = nextQty;
-    renderDraftItems();
+    updateDraftItemQuantity(index, input.value);
   });
 
   dom.billingCustomerForm.addEventListener('submit', async (event) => {
@@ -2351,20 +2939,43 @@ function bindBilling() {
     };
 
     try {
-      setStatus('Creating invoice...');
-      const invoice = await invoke('createInvoice', payload);
+      const isEdit = Boolean(state.editingInvoiceId);
+      const method = isEdit ? 'updateInvoice' : 'createInvoice';
+      const actionText = isEdit ? 'Updating invoice...' : 'Creating invoice...';
+      const requestPayload = isEdit
+        ? {
+            ...payload,
+            id: state.editingInvoiceId
+          }
+        : payload;
+
+      setStatus(actionText);
+      const invoice = await invoke(method, requestPayload);
 
       clearInvoiceDraft();
       await reloadData();
-      triggerThermalInvoiceAutoPrint(invoice);
-      showToast(`Invoice ${invoice.invoiceNo} created successfully`);
-      dom.barcodeInput.focus();
+      if (!isEdit) {
+        triggerThermalInvoiceAutoPrint(invoice);
+      }
+      showToast(
+        isEdit
+          ? `Invoice ${invoice.invoiceNo} updated successfully`
+          : `Invoice ${invoice.invoiceNo} created successfully`
+      );
+      focusBillingScannerInput();
       setStatus('Live');
     } catch (error) {
       setStatus('Live');
       showToast(error.message, 'error');
     }
   });
+
+  if (dom.invoiceCancelEditBtn) {
+    dom.invoiceCancelEditBtn.addEventListener('click', () => {
+      clearInvoiceDraft();
+      focusBillingScannerInput();
+    });
+  }
 }
 
 function openDialog(modal) {
@@ -2569,6 +3180,18 @@ function bindInvoices() {
   }
 
   dom.invoicesBody.addEventListener('click', async (event) => {
+    const editBtn = event.target.closest('button[data-edit-invoice-id]');
+    if (editBtn) {
+      const invoice = state.invoices.find((entry) => entry.id === editBtn.dataset.editInvoiceId);
+      if (!invoice) {
+        showToast('Invoice not found', 'error');
+        return;
+      }
+
+      startInvoiceEdit(invoice);
+      return;
+    }
+
     const paymentBtn = event.target.closest('button[data-pay-id]');
     if (paymentBtn) {
       const invoiceId = paymentBtn.dataset.payId;
@@ -2667,6 +3290,7 @@ function bindReports() {
 
 function switchView(view) {
   state.currentView = view;
+  const isTouchMode = isTouchUiModeActive();
 
   document.querySelectorAll('.view').forEach((section) => {
     section.classList.toggle('active', section.id === `view-${view}`);
@@ -2692,12 +3316,12 @@ function switchView(view) {
   dom.viewTitle.textContent = titles[view] || 'ERPManiaC';
 
   if (view === 'billing') {
-    dom.barcodeInput.focus();
-  } else if (view === 'purchases') {
+    focusBillingScannerInput();
+  } else if (view === 'purchases' && !isTouchMode) {
     dom.purchaseBarcodeInput.focus();
-  } else if (view === 'expenses') {
+  } else if (view === 'expenses' && !isTouchMode) {
     dom.expenseAmount.focus();
-  } else if (view === 'settings' && dom.businessName) {
+  } else if (view === 'settings' && dom.businessName && !isTouchMode) {
     dom.businessName.focus();
   }
 }
@@ -2713,6 +3337,7 @@ function resetProductForm() {
   dom.productPackPrice.value = '0';
   dom.productPackSize.disabled = true;
   dom.productPackPrice.disabled = true;
+  updateProductStockInputMode();
   dom.productSaveBtn.textContent = 'Save Product';
 }
 
@@ -2722,6 +3347,16 @@ function resetPurchaseProductForm() {
   setSelectValueWithFallback(dom.purchaseProductUnit, 'Unit');
   dom.purchaseProductWholesaleMinQty.value = '';
   dom.purchaseProductReorderLevel.value = '';
+  if (dom.purchaseProductPackEnabled) {
+    dom.purchaseProductPackEnabled.checked = false;
+  }
+  if (dom.purchaseProductPackSize) {
+    dom.purchaseProductPackSize.value = '1';
+  }
+  if (dom.purchaseProductPackPrice) {
+    dom.purchaseProductPackPrice.value = '0';
+  }
+  syncPurchaseProductPackFields();
 }
 
 function resetPurchaseUnknownProductForm() {
@@ -2734,6 +3369,59 @@ function resetPurchaseUnknownProductForm() {
   setSelectValueWithFallback(dom.purchaseUnknownProductUnit, 'Unit');
   dom.purchaseUnknownProductWholesaleMinQty.value = '';
   dom.purchaseUnknownProductReorderLevel.value = '';
+  if (dom.purchaseUnknownProductPackEnabled) {
+    dom.purchaseUnknownProductPackEnabled.checked = false;
+  }
+  if (dom.purchaseUnknownProductPackSize) {
+    dom.purchaseUnknownProductPackSize.value = '1';
+  }
+  if (dom.purchaseUnknownProductPackPrice) {
+    dom.purchaseUnknownProductPackPrice.value = '0';
+  }
+  syncPurchaseUnknownPackFields();
+}
+
+function syncQuickPurchasePackFields(enabledInput, sizeInput, priceInput, retailPriceInput) {
+  if (!enabledInput || !sizeInput || !priceInput) {
+    return;
+  }
+
+  const enabled = Boolean(enabledInput.checked);
+  sizeInput.disabled = !enabled;
+  priceInput.disabled = !enabled;
+
+  if (!enabled) {
+    sizeInput.value = '1';
+    priceInput.value = '0';
+    return;
+  }
+
+  const packSize = Math.max(2, Math.trunc(toNumber(sizeInput.value, 2)));
+  sizeInput.value = String(packSize);
+
+  const retailPrice = round2(parseQuickPriceInput(retailPriceInput && retailPriceInput.value, 0));
+  const currentPackPrice = round2(parseQuickPriceInput(priceInput.value, 0));
+  if (!(currentPackPrice > 0)) {
+    priceInput.value = round2(retailPrice * packSize).toFixed(2);
+  }
+}
+
+function syncPurchaseProductPackFields() {
+  syncQuickPurchasePackFields(
+    dom.purchaseProductPackEnabled,
+    dom.purchaseProductPackSize,
+    dom.purchaseProductPackPrice,
+    dom.purchaseProductRetailPrice
+  );
+}
+
+function syncPurchaseUnknownPackFields() {
+  syncQuickPurchasePackFields(
+    dom.purchaseUnknownProductPackEnabled,
+    dom.purchaseUnknownProductPackSize,
+    dom.purchaseUnknownProductPackPrice,
+    dom.purchaseUnknownProductRetailPrice
+  );
 }
 
 function parseQuickPriceInput(value, fallback = NaN) {
@@ -2757,6 +3445,13 @@ function getPurchaseProductPayload(input) {
   const wholesalePrice = round2(parseQuickPriceInput(input.wholesalePrice, retailPrice));
   const wholesaleMinQtyRaw = parseQuickPriceInput(input.wholesaleMinQty, NaN);
   const reorderLevelRaw = parseQuickPriceInput(input.reorderLevel, NaN);
+  const packEnabled = Boolean(input.packEnabled);
+  const parsedPackSize = Math.trunc(parseQuickPriceInput(input.packSize, NaN));
+  const packSize = packEnabled ? Math.max(2, parsedPackSize || 2) : 1;
+  const parsedPackPrice = round2(parseQuickPriceInput(input.packPrice, NaN));
+  const packPrice = packEnabled
+    ? round2(Number.isFinite(parsedPackPrice) && parsedPackPrice > 0 ? parsedPackPrice : retailPrice * packSize)
+    : 0;
 
   return {
     name: input.name,
@@ -2765,6 +3460,10 @@ function getPurchaseProductPayload(input) {
     unit: input.unit,
     costPrice,
     retailPrice,
+    loosePrice: retailPrice,
+    packEnabled,
+    packSize,
+    packPrice,
     wholesalePrice,
     wholesaleMinQty: Number.isFinite(wholesaleMinQtyRaw) ? round2(wholesaleMinQtyRaw) : '',
     stock: 0,
@@ -3130,6 +3829,38 @@ function resetBillingCustomerForm() {
   syncBillingQuickCustomerType();
 }
 
+function resetExpenseForm() {
+  state.editingExpenseId = '';
+  dom.expenseForm.reset();
+  dom.expenseDate.value = todayKey();
+  dom.expensePaymentMethod.value = 'cash';
+  dom.expenseSubmitBtn.textContent = 'Record Expense';
+  if (dom.expenseCancelEditBtn) {
+    dom.expenseCancelEditBtn.classList.add('hidden');
+  }
+}
+
+function startExpenseEdit(expense) {
+  if (!expense) {
+    return;
+  }
+
+  state.editingExpenseId = expense.id;
+  setSelectValueWithFallback(dom.expenseCategory, expense.category || 'Miscellaneous');
+  dom.expenseAmount.value = round2(toNumber(expense.amount, 0)).toFixed(2);
+  dom.expensePaymentMethod.value = normalizePaymentMethod(expense.paymentMethod);
+  dom.expenseDate.value = toDateInputValue(expense.createdAt, todayKey());
+  dom.expensePaidTo.value = expense.paidTo || '';
+  dom.expenseNotes.value = expense.notes || '';
+  dom.expenseSubmitBtn.textContent = 'Update Expense';
+  if (dom.expenseCancelEditBtn) {
+    dom.expenseCancelEditBtn.classList.remove('hidden');
+  }
+  switchView('expenses');
+  dom.expenseAmount.focus();
+  dom.expenseAmount.select();
+}
+
 function fillProductForm(product) {
   const packConfig = getProductPackConfig(product);
   dom.productForm.querySelector('#product-id').value = product.id;
@@ -3147,8 +3878,11 @@ function fillProductForm(product) {
   dom.productPackPrice.disabled = !packConfig.packEnabled;
   dom.productForm.querySelector('#product-wholesale-price').value = product.wholesalePrice;
   dom.productForm.querySelector('#product-wholesale-min-qty').value = product.wholesaleMinQty;
-  dom.productForm.querySelector('#product-stock').value = product.stock;
+  dom.productForm.querySelector('#product-stock').value = packConfig.packEnabled
+    ? round2(toNumber(product.stock, 0) / packConfig.packSize)
+    : product.stock;
   dom.productForm.querySelector('#product-reorder-level').value = product.reorderLevel;
+  updateProductStockInputMode();
   dom.productSaveBtn.textContent = 'Update Product';
 }
 
@@ -3249,6 +3983,7 @@ function renderBackupSettings() {
 function renderUiSettings() {
   const uiSettings = normalizeUiSettingsForUi(state.uiSettings);
   state.uiSettings = uiSettings;
+  applyUiMode(uiSettings.uiMode);
   applyThemeMode(uiSettings.themeMode);
   renderThermalSettings();
 }
@@ -3794,7 +4529,49 @@ function addSelectedPurchaseProduct() {
   }
 }
 
+function startPurchaseEdit(purchase) {
+  if (!purchase) {
+    return;
+  }
+
+  state.editingPurchaseId = purchase.id;
+  dom.purchaseSubmitBtn.textContent = 'Update Purchase';
+  if (dom.purchaseCancelEditBtn) {
+    dom.purchaseCancelEditBtn.classList.remove('hidden');
+  }
+
+  renderSupplierOptions();
+  renderPurchaseProductOptions();
+
+  if (state.suppliers.some((entry) => entry.id === purchase.supplierId)) {
+    dom.purchaseSupplier.value = purchase.supplierId;
+  }
+
+  dom.purchaseGstEnabled.checked = Boolean(purchase.gstEnabled);
+  dom.purchaseGstRate.disabled = !dom.purchaseGstEnabled.checked;
+  dom.purchaseGstRate.value = round2(toNumber(purchase.gstRate, 0)).toFixed(2);
+  dom.purchaseDiscount.value = round2(toNumber(purchase.discount, 0)).toFixed(2);
+  dom.purchasePaid.value = round2(toNumber(purchase.paidAmount, 0)).toFixed(2);
+  dom.purchasePaidMethod.value = normalizePaymentMethod(purchase.paidMethod);
+  dom.purchaseNotes.value = purchase.notes || '';
+  dom.purchaseBarcodeInput.value = '';
+  dom.purchaseDraftQty.value = '1';
+
+  state.purchaseDraftItems = (Array.isArray(purchase.items) ? purchase.items : [])
+    .map((item) => ({
+      productId: item.productId,
+      qty: round2(toNumber(item.qty, 0)),
+      unitCost: round2(toNumber(item.unitCost, 0))
+    }))
+    .filter((line) => line.productId && line.qty > 0 && line.unitCost > 0);
+
+  renderPurchaseDraftItems();
+  switchView('purchases');
+  dom.purchaseBarcodeInput.focus();
+}
+
 function clearPurchaseDraft() {
+  state.editingPurchaseId = '';
   state.purchaseDraftItems = [];
   dom.purchaseForm.reset();
   dom.purchaseGstEnabled.checked = false;
@@ -3806,6 +4583,10 @@ function clearPurchaseDraft() {
   dom.purchaseNotes.value = '';
   dom.purchaseBarcodeInput.value = '';
   dom.purchaseDraftQty.value = '1';
+  dom.purchaseSubmitBtn.textContent = 'Create Purchase';
+  if (dom.purchaseCancelEditBtn) {
+    dom.purchaseCancelEditBtn.classList.add('hidden');
+  }
 
   renderSupplierOptions();
   renderPurchaseProductOptions();
@@ -3825,7 +4606,7 @@ function renderPurchases() {
   }
 
   if (!purchases.length) {
-    dom.purchasesBody.innerHTML = '<tr><td colspan="7" class="empty">No purchases found</td></tr>';
+    dom.purchasesBody.innerHTML = '<tr><td colspan="8" class="empty">No purchases found</td></tr>';
     return;
   }
 
@@ -3843,6 +4624,9 @@ function renderPurchases() {
           </td>
           <td>${formatMoney(purchase.balance)}</td>
           <td>${purchase.gstEnabled ? `${purchase.gstRate}%` : 'No GST'}</td>
+          <td>
+            <button class="btn small ghost" data-edit-purchase-id="${purchase.id}">Edit</button>
+          </td>
         </tr>
       `
     )
@@ -3864,7 +4648,7 @@ function renderExpenses() {
   }
 
   if (!expenses.length) {
-    dom.expensesBody.innerHTML = '<tr><td colspan="6" class="empty">No expenses recorded</td></tr>';
+    dom.expensesBody.innerHTML = '<tr><td colspan="7" class="empty">No expenses recorded</td></tr>';
     return;
   }
 
@@ -3880,6 +4664,9 @@ function renderExpenses() {
           <td>
             ${formatMoney(expense.amount)}
             <div class="muted">${paymentMethodLabel(expense.paymentMethod)}</div>
+          </td>
+          <td>
+            <button class="btn small ghost" data-edit-expense-id="${expense.id}">Edit</button>
           </td>
         </tr>
       `
@@ -3904,6 +4691,7 @@ function renderBillingProductOptions() {
       ? '<option value="">No matching product</option>'
       : '<option value="">No stock available</option>';
     renderBillingSaleUnitOptions(null);
+    renderTouchPosWorkspace();
     return;
   }
 
@@ -3932,6 +4720,7 @@ function renderBillingProductOptions() {
 
   const activeProduct = state.products.find((product) => product.id === dom.draftProductId.value) || null;
   renderBillingSaleUnitOptions(activeProduct);
+  renderTouchPosWorkspace();
 }
 
 function renderBillingSaleUnitOptions(product) {
@@ -3987,6 +4776,186 @@ function renderBillingCustomerOptions() {
   if (stillExists) {
     dom.invoiceCustomer.value = selected;
   }
+
+  syncTouchPosPanelFromForm();
+}
+
+function getTouchPosFilteredProducts() {
+  const search = state.billingProductSearch;
+  let products = state.products.filter((product) => product.stock > 0);
+
+  if (state.touchPosCategory && state.touchPosCategory !== 'all') {
+    products = products.filter(
+      (product) => String(product.category || 'General').trim() === state.touchPosCategory
+    );
+  }
+
+  if (search) {
+    products = products.filter((product) => {
+      const text = `${product.name} ${product.sku} ${product.barcode || ''}`.toLowerCase();
+      return text.includes(search);
+    });
+  }
+
+  return products;
+}
+
+function syncTouchPosPanelFromForm() {
+  if (!dom.touchPosWorkspace) {
+    return;
+  }
+
+  const rawSearchText = dom.billingProductSearch ? dom.billingProductSearch.value : state.billingProductSearch;
+  if (dom.touchPosSearch && dom.touchPosSearch.value !== rawSearchText) {
+    dom.touchPosSearch.value = rawSearchText;
+  }
+
+  if (dom.touchPosChannel && dom.touchPosChannel.value !== dom.invoiceChannel.value) {
+    dom.touchPosChannel.value = dom.invoiceChannel.value;
+  }
+
+  if (dom.touchPosCustomer) {
+    dom.touchPosCustomer.innerHTML = dom.invoiceCustomer.innerHTML;
+    const selectedCustomer = dom.invoiceCustomer.value;
+    if (selectedCustomer && dom.touchPosCustomer.querySelector(`option[value="${selectedCustomer}"]`)) {
+      dom.touchPosCustomer.value = selectedCustomer;
+    }
+  }
+
+  if (dom.touchPosSaleUnit && dom.touchPosSaleUnit.value !== normalizeSaleUnit(dom.draftSaleUnit.value)) {
+    dom.touchPosSaleUnit.value = normalizeSaleUnit(dom.draftSaleUnit.value);
+  }
+
+  if (dom.touchPosPaymentMethod && dom.touchPosPaymentMethod.value !== dom.invoicePaidMethod.value) {
+    dom.touchPosPaymentMethod.value = dom.invoicePaidMethod.value;
+  }
+
+  if (dom.touchPosDiscount && dom.touchPosDiscount.value !== dom.invoiceDiscount.value) {
+    dom.touchPosDiscount.value = dom.invoiceDiscount.value;
+  }
+
+  if (dom.touchPosPaid && dom.touchPosPaid.value !== dom.invoicePaid.value) {
+    dom.touchPosPaid.value = dom.invoicePaid.value;
+  }
+
+  if (dom.touchPosTotal) {
+    dom.touchPosTotal.textContent = dom.totalValue.textContent;
+  }
+  if (dom.touchPosSubtotal) {
+    dom.touchPosSubtotal.textContent = dom.subtotalValue.textContent;
+  }
+  if (dom.touchPosBalance) {
+    dom.touchPosBalance.textContent = dom.balanceValue.textContent;
+  }
+}
+
+function renderTouchPosCategories() {
+  if (!dom.touchPosCategoryList) {
+    return;
+  }
+
+  const categories = Array.from(
+    new Set(
+      state.products
+        .filter((product) => product.stock > 0)
+        .map((product) => String(product.category || 'General').trim() || 'General')
+    )
+  ).sort((a, b) => a.localeCompare(b));
+
+  const allCategories = ['all', ...categories];
+  if (!allCategories.includes(state.touchPosCategory)) {
+    state.touchPosCategory = 'all';
+  }
+
+  dom.touchPosCategoryList.innerHTML = allCategories
+    .map((category) => {
+      const isAll = category === 'all';
+      const label = isAll ? 'All' : category;
+      const count = isAll
+        ? state.products.filter((product) => product.stock > 0).length
+        : state.products.filter(
+            (product) => product.stock > 0 && String(product.category || 'General').trim() === category
+          ).length;
+      const activeClass = state.touchPosCategory === category ? 'active' : '';
+      return `<button type="button" class="touch-pos-category-btn ${activeClass}" data-touch-category="${category}">${label} <span>${count}</span></button>`;
+    })
+    .join('');
+}
+
+function renderTouchPosProductGrid() {
+  if (!dom.touchPosProductGrid) {
+    return;
+  }
+
+  const products = getTouchPosFilteredProducts();
+  if (!products.length) {
+    dom.touchPosProductGrid.innerHTML = '<div class="touch-pos-empty">No products in this filter</div>';
+    return;
+  }
+
+  dom.touchPosProductGrid.innerHTML = products
+    .map((product) => {
+      const config = getProductPackConfig(product);
+      const stockText = config.packEnabled
+        ? `${product.stock} ${config.looseUnit} (~${round2(product.stock / config.packSize)} pack)`
+        : `${product.stock} ${config.looseUnit}`;
+
+      return `
+        <button type="button" class="touch-pos-product-card" data-touch-product-id="${product.id}">
+          <strong>${product.name}</strong>
+          <span>${formatMoney(config.loosePrice)} / ${config.looseUnit}</span>
+          ${
+            config.packEnabled
+              ? `<span>${formatMoney(config.packPrice)} / Pack (${config.packSize})</span>`
+              : '<span>Pack sale not enabled</span>'
+          }
+          <small>Stock: ${stockText}</small>
+        </button>
+      `;
+    })
+    .join('');
+}
+
+function renderTouchPosCartLines() {
+  if (!dom.touchPosCartLines) {
+    return;
+  }
+
+  const lines = resolveDraftLines();
+  if (!lines.length) {
+    dom.touchPosCartLines.innerHTML = '<div class="touch-pos-empty">No items added yet</div>';
+    return;
+  }
+
+  dom.touchPosCartLines.innerHTML = lines
+    .map(
+      (line, index) => `
+        <div class="touch-pos-cart-line">
+          <div class="touch-pos-cart-main">
+            <strong>${line.product.name}</strong>
+            <small>${line.qty} ${line.unitLabel} • ${formatMoney(line.unitPrice)}</small>
+          </div>
+          <div class="touch-pos-cart-amount">${formatMoney(line.lineTotal)}</div>
+          <div class="touch-pos-cart-actions">
+            <button type="button" data-touch-line-dec="${index}">-</button>
+            <button type="button" data-touch-line-inc="${index}">+</button>
+            <button type="button" data-touch-line-remove="${index}">X</button>
+          </div>
+        </div>
+      `
+    )
+    .join('');
+}
+
+function renderTouchPosWorkspace() {
+  if (!dom.touchPosWorkspace) {
+    return;
+  }
+
+  syncTouchPosPanelFromForm();
+  renderTouchPosCategories();
+  renderTouchPosProductGrid();
+  renderTouchPosCartLines();
 }
 
 function getUnitPrice(product, channel, qty, saleUnit) {
@@ -4066,20 +5035,65 @@ function addDraftItem(productId, qty, saleUnit = 'loose') {
   return true;
 }
 
+function updateDraftItemQuantity(index, nextQtyInput) {
+  const indexNumber = Number(index);
+  const nextQty = round2(toNumber(nextQtyInput, NaN));
+
+  if (Number.isNaN(indexNumber) || !state.draftItems[indexNumber]) {
+    return false;
+  }
+
+  if (!Number.isFinite(nextQty) || nextQty <= 0) {
+    showToast('Quantity must be greater than 0', 'error');
+    renderDraftItems();
+    return false;
+  }
+
+  const line = state.draftItems[indexNumber];
+  const product = state.products.find((entry) => entry.id === line.productId);
+  if (!product) {
+    showToast('Invalid product in draft', 'error');
+    renderDraftItems();
+    return false;
+  }
+
+  const nextBaseQty = toBaseQty(product, nextQty, line.saleUnit);
+  const otherBaseQty = round2(
+    state.draftItems.reduce((sum, current, currentIndex) => {
+      if (currentIndex === indexNumber || current.productId !== line.productId) {
+        return sum;
+      }
+      return round2(sum + toBaseQty(product, current.qty, current.saleUnit));
+    }, 0)
+  );
+  const totalBaseQty = round2(otherBaseQty + nextBaseQty);
+
+  if (totalBaseQty > product.stock) {
+    showToast(`Only ${product.stock} loose units available for ${product.name}`, 'error');
+    renderDraftItems();
+    return false;
+  }
+
+  line.qty = nextQty;
+  renderDraftItems();
+  return true;
+}
+
 function addSelectedProductToDraft() {
   const productId = dom.draftProductId.value;
-  const saleUnit = normalizeSaleUnit(dom.draftSaleUnit.value);
-  const qty = dom.draftQty.value;
+  const saleUnit = getSelectedBillingSaleUnit();
+  const qty = round2(toNumber(dom.draftQty.value, NaN));
 
   if (!productId) {
     showToast('Select a product first', 'error');
     return;
   }
 
-  const added = addDraftItem(productId, qty, saleUnit);
+  const product = state.products.find((entry) => entry.id === productId);
+  const added = addBillingProductToDraft(product, qty, saleUnit);
   if (added) {
     dom.draftQty.value = '1';
-    dom.barcodeInput.focus();
+    focusBillingScannerInput();
   }
 }
 
@@ -4133,6 +5147,7 @@ function renderDraftTotals() {
   dom.gstValue.textContent = formatMoney(gstAmount);
   dom.totalValue.textContent = formatMoney(total);
   dom.balanceValue.textContent = formatMoney(balance);
+  syncTouchPosPanelFromForm();
 }
 
 function renderDraftItems() {
@@ -4141,6 +5156,7 @@ function renderDraftItems() {
   if (!lines.length) {
     dom.draftItemsBody.innerHTML = '<tr><td colspan="5" class="empty">No items added yet</td></tr>';
     renderDraftTotals();
+    renderTouchPosWorkspace();
     return;
   }
 
@@ -4166,9 +5182,70 @@ function renderDraftItems() {
     .join('');
 
   renderDraftTotals();
+  renderTouchPosWorkspace();
+}
+
+function startInvoiceEdit(invoice) {
+  if (!invoice) {
+    return;
+  }
+
+  state.editingInvoiceId = invoice.id;
+  state.invoicePaidTouched = true;
+
+  dom.invoiceChannel.value = invoice.channel || 'retail';
+  renderBillingCustomerOptions();
+
+  if (invoice.customerId && state.customers.some((entry) => entry.id === invoice.customerId)) {
+    dom.invoiceCustomer.value = invoice.customerId;
+  } else {
+    const walkIn = state.customers.find((entry) => entry.name === 'Walk-in Customer');
+    if (walkIn) {
+      dom.invoiceCustomer.value = walkIn.id;
+    }
+  }
+
+  dom.invoiceGstEnabled.checked = Boolean(invoice.gstEnabled);
+  dom.invoiceGstRate.disabled = !dom.invoiceGstEnabled.checked;
+  dom.invoiceGstRate.value = round2(toNumber(invoice.gstRate, 0)).toFixed(2);
+  dom.invoiceDiscount.value = round2(toNumber(invoice.discount, 0)).toFixed(2);
+  dom.invoicePaid.value = round2(toNumber(invoice.paidAmount, 0)).toFixed(2);
+  dom.invoicePaidMethod.value = normalizePaymentMethod(invoice.paidMethod);
+  dom.invoiceNotes.value = invoice.notes || '';
+  state.billingProductSearch = '';
+  state.touchPosCategory = 'all';
+  dom.billingProductSearch.value = '';
+  if (dom.touchPosSearch) {
+    dom.touchPosSearch.value = '';
+  }
+  dom.barcodeInput.value = '';
+  if (dom.touchPosBarcode) {
+    dom.touchPosBarcode.value = '';
+  }
+  dom.draftQty.value = '1';
+
+  state.draftItems = (Array.isArray(invoice.items) ? invoice.items : [])
+    .map((item) => ({
+      productId: item.productId,
+      qty: round2(toNumber(item.qty, 0)),
+      saleUnit: normalizeSaleUnit(item.saleUnit)
+    }))
+    .filter((line) => line.productId && line.qty > 0);
+
+  dom.invoiceSubmitBtn.textContent = 'Update Invoice';
+  if (dom.invoiceCancelEditBtn) {
+    dom.invoiceCancelEditBtn.classList.remove('hidden');
+  }
+
+  renderBillingCustomerOptions();
+  renderBillingProductOptions();
+  renderDraftItems();
+  switchView('billing');
+  focusBillingScannerInput();
 }
 
 function clearInvoiceDraft() {
+  state.editingInvoiceId = '';
   state.draftItems = [];
   state.invoicePaidTouched = false;
 
@@ -4182,15 +5259,32 @@ function clearInvoiceDraft() {
   dom.invoicePaidMethod.value = 'cash';
   dom.invoiceNotes.value = '';
   state.billingProductSearch = '';
+  state.touchPosCategory = 'all';
   dom.billingProductSearch.value = '';
+  if (dom.touchPosSearch) {
+    dom.touchPosSearch.value = '';
+  }
+  if (dom.touchPosQty) {
+    dom.touchPosQty.value = '1';
+  }
+  if (dom.touchPosBarcode) {
+    dom.touchPosBarcode.value = '';
+  }
   dom.draftQty.value = '1';
   dom.draftSaleUnit.value = 'loose';
   dom.barcodeInput.value = '';
+  dom.invoiceSubmitBtn.textContent = 'Create Invoice';
+  if (dom.invoiceCancelEditBtn) {
+    dom.invoiceCancelEditBtn.classList.add('hidden');
+  }
 
   renderBillingCustomerOptions();
   renderBillingProductOptions();
   resetBillingCustomerForm();
   renderDraftItems();
+  if (state.currentView === 'billing') {
+    focusBillingScannerInput();
+  }
 }
 
 function renderInvoices() {
@@ -4237,13 +5331,16 @@ function renderInvoices() {
           </td>
           <td>${invoice.gstEnabled ? `${invoice.gstRate}%` : 'No GST'}</td>
           <td>
-            <button class="btn small subtle" data-pay-id="${invoice.id}" ${receiveDisabled}>Receive</button>
-            <button class="btn small subtle" data-preview-id="${invoice.id}">View</button>
-            <button class="btn small subtle" data-preview-thermal-id="${invoice.id}">Thermal</button>
-            <button class="btn small ghost" data-print-id="${invoice.id}">Print</button>
+            <div class="invoice-action-grid">
+                <button class="btn small ghost" data-edit-invoice-id="${invoice.id}">Edit</button>
+              <button class="btn small subtle" data-pay-id="${invoice.id}" ${receiveDisabled}>Receive</button>
+              <button class="btn small subtle" data-preview-id="${invoice.id}">View</button>
+              <button class="btn small subtle" data-preview-thermal-id="${invoice.id}">Thermal</button>
+              <button class="btn small ghost" data-print-id="${invoice.id}">Print</button>
+            </div>
           </td>
         </tr>
-      `
+      `;
     })
     .join('');
 }
@@ -4466,6 +5563,7 @@ function renderAll() {
   renderInvoices();
   renderReports();
   renderLicenseGate();
+  scheduleTouchTableLabels();
 }
 
 async function reloadData() {
@@ -4505,13 +5603,16 @@ async function reloadData() {
 
 async function initializeApp() {
   cacheDom();
+  ensureTouchTableObserver();
   state.uiSettings = normalizeUiSettingsForUi({});
+  applyUiMode(state.uiSettings.uiMode);
   applyThemeMode(state.uiSettings.themeMode);
   bindLicense();
   bindNavigation();
   bindSidebarShortcuts();
   bindActionShortcuts();
   bindThemeMode();
+  bindUiMode();
   bindThermalPrinting();
   bindBusiness();
   bindBackup();
@@ -4529,7 +5630,7 @@ async function initializeApp() {
   state.reportPeriod = 'daily';
   dom.reportPeriod.value = state.reportPeriod;
   dom.reportDate.value = todayKey();
-  dom.expenseDate.value = todayKey();
+  resetExpenseForm();
   state.billingProductSearch = '';
   dom.billingProductSearch.value = '';
   resetPurchaseSupplierForm();
@@ -4541,8 +5642,11 @@ async function initializeApp() {
     await reloadData();
     await refreshThermalPrinters({ silentError: true });
     if (state.licenseStatus?.isActive) {
+      if (isTouchUiModeActive()) {
+        switchView('billing');
+      }
       setStatus('Live');
-      dom.barcodeInput.focus();
+      focusBillingScannerInput();
     } else {
       setStatus('License required');
       dom.licenseKeyInput.focus();

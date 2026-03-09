@@ -93,6 +93,10 @@ function normalizeThemeMode(value) {
   return 'auto';
 }
 
+function normalizeUiMode(value) {
+  return toText(value).toLowerCase() === 'touch' ? 'touch' : 'pc';
+}
+
 function normalizeThermalPrinterName(value) {
   return toText(value);
 }
@@ -684,6 +688,68 @@ function deriveInvoicePaymentStatus(total, paidAmount, balance) {
   }
 
   return 'unpaid';
+}
+
+function sumSupplierPaymentAllocationsForPurchase(data, purchaseId) {
+  const targetId = toText(purchaseId);
+  if (!targetId) {
+    return 0;
+  }
+
+  const payments = Array.isArray(data && data.supplierPayments) ? data.supplierPayments : [];
+  let total = 0;
+
+  for (const payment of payments) {
+    const allocations = Array.isArray(payment && payment.allocations) ? payment.allocations : [];
+    for (const allocation of allocations) {
+      if (toText(allocation && allocation.purchaseId) !== targetId) {
+        continue;
+      }
+
+      total = round2(total + round2(toNumber(allocation && allocation.amount, 0)));
+    }
+  }
+
+  return total;
+}
+
+function recalculateProductCostFromPurchases(data, productId) {
+  const targetId = toText(productId);
+  if (!targetId) {
+    return;
+  }
+
+  const product = Array.isArray(data && data.products)
+    ? data.products.find((entry) => entry.id === targetId)
+    : null;
+  if (!product) {
+    return;
+  }
+
+  let totalQty = 0;
+  let totalCost = 0;
+  const purchases = Array.isArray(data && data.purchases) ? data.purchases : [];
+  for (const purchase of purchases) {
+    const items = Array.isArray(purchase && purchase.items) ? purchase.items : [];
+    for (const item of items) {
+      if (toText(item && item.productId) !== targetId) {
+        continue;
+      }
+
+      const qty = round2(toNumber(item && item.qty, 0));
+      const unitCost = round2(toNumber(item && item.unitCost, 0));
+      if (!(qty > 0) || !(unitCost > 0)) {
+        continue;
+      }
+
+      totalQty = round2(totalQty + qty);
+      totalCost = round2(totalCost + round2(qty * unitCost));
+    }
+  }
+
+  if (totalQty > 0) {
+    product.costPrice = round2(totalCost / totalQty);
+  }
 }
 
 function calculateMetricsForRange(data, start, end) {
@@ -1449,6 +1515,7 @@ function createErpService() {
       uiSettings: clone(
         data.meta.uiSettings || {
           themeMode: 'auto',
+          uiMode: 'pc',
           thermalAutoPrintEnabled: false,
           thermalPrinterName: ''
         }
@@ -1460,6 +1527,7 @@ function createErpService() {
   function upsertUiSettings(payload) {
     const input = payload && typeof payload === 'object' ? payload : {};
     const hasThemeMode = Object.prototype.hasOwnProperty.call(input, 'themeMode');
+    const hasUiMode = Object.prototype.hasOwnProperty.call(input, 'uiMode');
     const hasThermalEnabled = Object.prototype.hasOwnProperty.call(
       input,
       'thermalAutoPrintEnabled'
@@ -1473,6 +1541,7 @@ function createErpService() {
           ? data.meta.uiSettings
           : {
               themeMode: 'auto',
+              uiMode: 'pc',
               thermalAutoPrintEnabled: false,
               thermalPrinterName: ''
             };
@@ -1480,6 +1549,7 @@ function createErpService() {
       data.meta.uiSettings = {
         ...current,
         themeMode: hasThemeMode ? normalizeThemeMode(input.themeMode) : normalizeThemeMode(current.themeMode),
+        uiMode: hasUiMode ? normalizeUiMode(input.uiMode) : normalizeUiMode(current.uiMode),
         thermalAutoPrintEnabled: hasThermalEnabled
           ? Boolean(input.thermalAutoPrintEnabled)
           : Boolean(current.thermalAutoPrintEnabled),
@@ -1560,7 +1630,9 @@ function createErpService() {
     const wholesaleMinQty = wholesaleMinQtyText
       ? round2(toNumber(wholesaleMinQtyText, NaN))
       : 1;
-    const stock = round2(toNumber(payload.stock, NaN));
+    const stockMode = toText(payload.stockMode).toLowerCase();
+    const stockInput = round2(toNumber(payload.stock, NaN));
+    const stock = packEnabled && stockMode === 'pack' ? round2(stockInput * packSize) : stockInput;
     const reorderLevelText = toText(payload.reorderLevel);
     const reorderLevel = reorderLevelText
       ? round2(toNumber(reorderLevelText, NaN))
@@ -1961,6 +2033,181 @@ function createErpService() {
     return clone(createdInvoice);
   }
 
+  function updateInvoice(payload) {
+    assertLicenseActive();
+
+    const invoiceId = toText(payload && (payload.id || payload.invoiceId));
+    const channel = normalizeChannel(payload && payload.channel);
+    const customerId = toText(payload && payload.customerId);
+    const discount = round2(toNumber(payload && payload.discount, 0));
+    const gstEnabled = Boolean(payload && payload.gstEnabled);
+    const gstRate = gstEnabled ? round2(toNumber(payload && payload.gstRate, 0)) : 0;
+    const paidAmountRaw = payload && payload.paidAmount;
+    const paidMethod = normalizePaymentMethod(
+      payload && (payload.paidMethod || payload.paymentMethod)
+    );
+    const notes = toText(payload && payload.notes);
+
+    assert(invoiceId, 'Invoice id is required');
+    assert(discount >= 0, 'Discount cannot be negative');
+    assert(gstRate >= 0, 'GST rate cannot be negative');
+
+    const rawItems = Array.isArray(payload && payload.items) ? payload.items : [];
+    assert(rawItems.length > 0, 'Add at least one invoice item');
+
+    const itemLines = [];
+    for (const item of rawItems) {
+      const productId = toText(item && item.productId);
+      const qty = round2(toNumber(item && item.qty, NaN));
+      const saleUnit = toText(item && item.saleUnit).toLowerCase() === 'pack' ? 'pack' : 'loose';
+
+      assert(productId, 'Each invoice item needs a product');
+      assert(Number.isFinite(qty) && qty > 0, 'Item quantity must be greater than 0');
+
+      itemLines.push({
+        productId,
+        qty,
+        saleUnit
+      });
+    }
+
+    let updatedInvoice;
+
+    store.mutate((data) => {
+      const invoice = data.invoices.find((entry) => entry.id === invoiceId);
+      assert(invoice, 'Invoice not found');
+
+      let customer = data.customers.find((entry) => entry.name === 'Walk-in Customer') || null;
+      if (customerId) {
+        const requested = data.customers.find((entry) => entry.id === customerId);
+        assert(requested, 'Selected customer does not exist');
+        customer = requested;
+      }
+
+      if (channel === 'wholesale' && customer && customer.type !== 'wholesale') {
+        throw new Error('Wholesale invoice should use a wholesale customer');
+      }
+
+      const productById = new Map(data.products.map((product) => [product.id, product]));
+      const previousItems = Array.isArray(invoice.items) ? invoice.items : [];
+
+      for (const line of previousItems) {
+        const productId = toText(line && line.productId);
+        if (!productId) {
+          continue;
+        }
+
+        const product = data.products.find((entry) => entry.id === productId);
+        assert(product, 'Invoice item has an invalid product');
+        const revertQty = round2(resolveInvoiceItemBaseQty(line, productById));
+        if (!(revertQty > 0)) {
+          continue;
+        }
+
+        product.stock = round2(toNumber(product.stock, 0) + revertQty);
+        product.updatedAt = nowIso();
+      }
+
+      const items = [];
+      let subtotal = 0;
+      const stockRequired = new Map();
+
+      for (const lineInput of itemLines) {
+        const product = data.products.find((entry) => entry.id === lineInput.productId);
+        assert(product, 'Invoice item has an invalid product');
+
+        const pricing = getPriceByChannel(product, channel, lineInput.qty, lineInput.saleUnit);
+        const baseQty = round2(toNumber(pricing.baseQty, lineInput.qty));
+        const lineTotal = round2(pricing.unitPrice * lineInput.qty);
+
+        subtotal = round2(subtotal + lineTotal);
+        const requiredQty = round2(toNumber(stockRequired.get(product.id), 0) + baseQty);
+        stockRequired.set(product.id, requiredQty);
+
+        items.push({
+          productId: product.id,
+          sku: product.sku,
+          barcode: product.barcode,
+          name: product.name,
+          unit: pricing.unitLabel,
+          qty: lineInput.qty,
+          baseQty,
+          saleUnit: pricing.saleUnit,
+          packSize: pricing.packSize,
+          looseUnit: pricing.looseUnit,
+          unitPrice: pricing.unitPrice,
+          costPrice: round2(toNumber(product.costPrice, product.wholesalePrice)),
+          lineTotal,
+          pricingMode: pricing.pricingMode
+        });
+      }
+
+      for (const [productId, requiredQty] of stockRequired.entries()) {
+        const product = data.products.find((entry) => entry.id === productId);
+        assert(product, 'Invoice item has an invalid product');
+        assert(product.stock >= requiredQty, `Insufficient stock for ${product.name}`);
+      }
+
+      for (const [productId, requiredQty] of stockRequired.entries()) {
+        const product = data.products.find((entry) => entry.id === productId);
+        product.stock = round2(product.stock - requiredQty);
+        product.updatedAt = nowIso();
+      }
+
+      const taxableValue = round2(Math.max(subtotal - discount, 0));
+      const gstAmount = round2(gstEnabled ? (taxableValue * gstRate) / 100 : 0);
+      const total = round2(taxableValue + gstAmount);
+
+      const history = Array.isArray(invoice.paymentHistory) ? invoice.paymentHistory : [];
+      const historyPaid = round2(
+        history.reduce((sum, payment) => sum + round2(toNumber(payment && payment.amount, 0)), 0)
+      );
+
+      const paidAmountMissing =
+        paidAmountRaw === undefined || paidAmountRaw === null || toText(paidAmountRaw) === '';
+      const fallbackPaidAmount = round2(toNumber(invoice.paidAmount, 0));
+      const paidAmountInput = round2(toNumber(paidAmountRaw, fallbackPaidAmount));
+      const paidAmount =
+        channel === 'retail' && paidAmountMissing && historyPaid <= 0 ? total : paidAmountInput;
+
+      assert(paidAmount >= 0, 'Paid amount cannot be negative');
+      assert(paidAmount >= historyPaid, 'Paid amount cannot be less than payments already received');
+
+      const balance = round2(Math.max(total - paidAmount, 0));
+      const change = round2(Math.max(paidAmount - total, 0));
+
+      invoice.channel = channel;
+      invoice.customerId = customer ? customer.id : null;
+      invoice.customerSnapshot = {
+        name: customer ? customer.name : 'Walk-in Customer',
+        type: customer ? customer.type : 'retail',
+        phone: customer ? customer.phone : '',
+        address: customer ? customer.address : '',
+        gstin: customer ? customer.gstin : ''
+      };
+      invoice.items = items;
+      invoice.subtotal = subtotal;
+      invoice.discount = discount;
+      invoice.taxableValue = taxableValue;
+      invoice.gstEnabled = gstEnabled;
+      invoice.gstRate = gstRate;
+      invoice.gstAmount = gstAmount;
+      invoice.total = total;
+      invoice.paidAmount = paidAmount;
+      invoice.paidMethod = paidMethod;
+      invoice.balance = balance;
+      invoice.paymentStatus = deriveInvoicePaymentStatus(total, paidAmount, balance);
+      invoice.change = change;
+      invoice.notes = notes;
+      invoice.updatedAt = nowIso();
+
+      updatedInvoice = clone(invoice);
+      return data;
+    });
+
+    return updatedInvoice;
+  }
+
   function createPurchase(payload) {
     assertLicenseActive();
 
@@ -2083,6 +2330,170 @@ function createErpService() {
     });
 
     return clone(createdPurchase);
+  }
+
+  function updatePurchase(payload) {
+    assertLicenseActive();
+
+    const purchaseId = toText(payload && (payload.id || payload.purchaseId));
+    const supplierId = toText(payload && payload.supplierId);
+    const discount = round2(toNumber(payload && payload.discount, 0));
+    const gstEnabled = Boolean(payload && payload.gstEnabled);
+    const gstRate = gstEnabled ? round2(toNumber(payload && payload.gstRate, 0)) : 0;
+    const paidAmount = round2(toNumber(payload && payload.paidAmount, 0));
+    const paidMethod = normalizePaymentMethod(
+      payload && (payload.paidMethod || payload.paymentMethod)
+    );
+    const notes = toText(payload && payload.notes);
+
+    assert(purchaseId, 'Purchase id is required');
+    assert(supplierId, 'Supplier is required');
+    assert(discount >= 0, 'Discount cannot be negative');
+    assert(gstRate >= 0, 'GST rate cannot be negative');
+    assert(paidAmount >= 0, 'Paid amount cannot be negative');
+
+    const rawItems = Array.isArray(payload && payload.items) ? payload.items : [];
+    assert(rawItems.length > 0, 'Add at least one purchase item');
+
+    const consolidated = new Map();
+    for (const item of rawItems) {
+      const productId = toText(item && item.productId);
+      const qty = round2(toNumber(item && item.qty, NaN));
+      const unitCost = round2(toNumber(item && item.unitCost, NaN));
+
+      assert(productId, 'Each purchase item needs a product');
+      assert(Number.isFinite(qty) && qty > 0, 'Purchase quantity must be greater than 0');
+      assert(Number.isFinite(unitCost) && unitCost > 0, 'Unit cost must be greater than 0');
+
+      const key = `${productId}::${unitCost.toFixed(4)}`;
+      const existing = consolidated.get(key);
+      if (existing) {
+        existing.qty = round2(existing.qty + qty);
+      } else {
+        consolidated.set(key, { productId, qty, unitCost });
+      }
+    }
+
+    let updatedPurchase;
+
+    store.mutate((data) => {
+      const purchase = data.purchases.find((entry) => entry.id === purchaseId);
+      assert(purchase, 'Purchase not found');
+
+      const supplier = data.suppliers.find((entry) => entry.id === supplierId);
+      assert(supplier, 'Selected supplier does not exist');
+
+      const allocationPaid = round2(sumSupplierPaymentAllocationsForPurchase(data, purchase.id));
+      if (allocationPaid > 0 && purchase.supplierId !== supplier.id) {
+        throw new Error('Cannot change supplier after supplier payments are recorded');
+      }
+
+      const affectedProductIds = new Set();
+      const previousItems = Array.isArray(purchase.items) ? purchase.items : [];
+      for (const previousLine of previousItems) {
+        const previousProductId = toText(previousLine && previousLine.productId);
+        if (previousProductId) {
+          affectedProductIds.add(previousProductId);
+        }
+
+        const product = data.products.find((entry) => entry.id === previousProductId);
+        assert(product, 'Purchase item has an invalid product');
+
+        const previousQty = round2(toNumber(previousLine && previousLine.qty, 0));
+        if (!(previousQty > 0)) {
+          continue;
+        }
+
+        const nextStock = round2(toNumber(product.stock, 0) - previousQty);
+        assert(
+          nextStock >= 0,
+          `Cannot edit purchase because current stock is too low for ${product.name}`
+        );
+        product.stock = nextStock;
+        product.updatedAt = nowIso();
+      }
+
+      const items = [];
+      let subtotal = 0;
+
+      for (const line of consolidated.values()) {
+        const product = data.products.find((entry) => entry.id === line.productId);
+        assert(product, 'Purchase item has an invalid product');
+
+        const lineTotal = round2(line.qty * line.unitCost);
+        subtotal = round2(subtotal + lineTotal);
+
+        items.push({
+          productId: product.id,
+          sku: product.sku,
+          barcode: product.barcode,
+          name: product.name,
+          unit: product.unit,
+          qty: line.qty,
+          unitCost: line.unitCost,
+          lineTotal
+        });
+
+        affectedProductIds.add(product.id);
+      }
+
+      const taxableValue = round2(Math.max(subtotal - discount, 0));
+      const gstAmount = round2(gstEnabled ? (taxableValue * gstRate) / 100 : 0);
+      const total = round2(taxableValue + gstAmount);
+      assert(paidAmount <= total, 'Paid amount cannot exceed purchase total');
+
+      const dueAmount = round2(Math.max(total - paidAmount, 0));
+      assert(
+        allocationPaid <= dueAmount,
+        'Due amount cannot be less than supplier payments already recorded'
+      );
+
+      for (const line of items) {
+        const product = data.products.find((entry) => entry.id === line.productId);
+        const oldStock = round2(toNumber(product.stock, 0));
+        const newStock = round2(oldStock + line.qty);
+        const existingCost = round2(toNumber(product.costPrice, line.unitCost));
+
+        const weightedCost =
+          newStock > 0
+            ? round2((existingCost * oldStock + line.unitCost * line.qty) / newStock)
+            : round2(line.unitCost);
+
+        product.stock = newStock;
+        product.costPrice = weightedCost;
+        product.updatedAt = nowIso();
+      }
+
+      purchase.supplierId = supplier.id;
+      purchase.supplierSnapshot = {
+        name: supplier.name,
+        phone: supplier.phone,
+        gstin: supplier.gstin
+      };
+      purchase.items = items;
+      purchase.subtotal = subtotal;
+      purchase.discount = discount;
+      purchase.taxableValue = taxableValue;
+      purchase.gstEnabled = gstEnabled;
+      purchase.gstRate = gstRate;
+      purchase.gstAmount = gstAmount;
+      purchase.total = total;
+      purchase.paidAmount = paidAmount;
+      purchase.paidMethod = paidMethod;
+      purchase.dueAmount = dueAmount;
+      purchase.balance = round2(Math.max(dueAmount - allocationPaid, 0));
+      purchase.notes = notes;
+      purchase.updatedAt = nowIso();
+
+      for (const productId of affectedProductIds) {
+        recalculateProductCostFromPurchases(data, productId);
+      }
+
+      updatedPurchase = clone(purchase);
+      return data;
+    });
+
+    return updatedPurchase;
   }
 
   function createSupplierPayment(payload) {
@@ -2212,6 +2623,49 @@ function createErpService() {
     });
 
     return clone(createdExpense);
+  }
+
+  function updateExpense(payload) {
+    assertLicenseActive();
+
+    const expenseId = toText(payload && (payload.id || payload.expenseId));
+    const category = toText(payload && payload.category) || 'Other';
+    const amount = round2(toNumber(payload && payload.amount, NaN));
+    const paymentMethod = normalizePaymentMethod(
+      payload && (payload.paymentMethod || payload.mode || payload.method)
+    );
+    const paidTo = toText(payload && payload.paidTo);
+    const notes = toText(payload && payload.notes);
+    const expenseDate = parseLocalDateInput(payload && payload.expenseDate);
+
+    assert(expenseId, 'Expense id is required');
+    assert(Number.isFinite(amount) && amount > 0, 'Expense amount must be greater than 0');
+
+    let updatedExpense;
+
+    store.mutate((data) => {
+      if (!Array.isArray(data.expenses)) {
+        data.expenses = [];
+      }
+
+      const expense = data.expenses.find((entry) => entry.id === expenseId);
+      assert(expense, 'Expense not found');
+
+      expense.category = category;
+      expense.amount = amount;
+      expense.paymentMethod = paymentMethod;
+      expense.paidTo = paidTo;
+      expense.notes = notes;
+      if (expenseDate) {
+        expense.createdAt = expenseDate.toISOString();
+      }
+      expense.updatedAt = nowIso();
+
+      updatedExpense = clone(expense);
+      return data;
+    });
+
+    return updatedExpense;
   }
 
   async function extractEnglishOcr(payload) {
@@ -2806,10 +3260,13 @@ function createErpService() {
     upsertSupplier,
     deleteSupplier,
     createInvoice,
+    updateInvoice,
     recordInvoicePayment,
     createPurchase,
+    updatePurchase,
     createSupplierPayment,
     createExpense,
+    updateExpense,
     extractEnglishOcr,
     getCustomerLedger,
     getSupplierLedger,

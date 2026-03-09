@@ -1,6 +1,6 @@
 {
   "name": "erpmania-grocery-erp",
-  "version": "2.1.1",
+  "version": "3.1.1",
   "description": "Offline Electron ERP app for grocery wholesale and retail billing",
   "main": "main.js",
   "author": "",
@@ -36,7 +36,7 @@
     "win": {
       "target": "nsis",
       "icon": "assets/logo/icon.ico",
-      "artifactName": "ERPManiaC ERP Setup ${version}.${ext}"
+      "artifactName": "ERPManiaC ${version}.${ext}"
     },
     "linux": {
       "target": "AppImage",

@@ -77,9 +77,15 @@ function normalizeThemeMode(value) {
   return 'auto';
 }
 
+function normalizeUiMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  return mode === 'touch' ? 'touch' : 'pc';
+}
+
 function defaultUiSettings() {
   return {
     themeMode: 'auto',
+    uiMode: 'pc',
     thermalAutoPrintEnabled: false,
     thermalPrinterName: ''
   };
@@ -418,6 +424,7 @@ function normalizeUiSettings(uiSettingsSource) {
 
   return {
     themeMode: normalizeThemeMode(source.themeMode || defaults.themeMode),
+    uiMode: normalizeUiMode(source.uiMode || defaults.uiMode),
     thermalAutoPrintEnabled: Boolean(source.thermalAutoPrintEnabled),
     thermalPrinterName: String(source.thermalPrinterName || '').trim()
   };
