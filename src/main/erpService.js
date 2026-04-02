@@ -97,6 +97,42 @@ function normalizeUiMode(value) {
   return toText(value).toLowerCase() === 'touch' ? 'touch' : 'pc';
 }
 
+const UI_MODE_VIEWS = [
+  'dashboard',
+  'products',
+  'customers',
+  'suppliers',
+  'purchases',
+  'expenses',
+  'billing',
+  'invoices',
+  'reports',
+  'settings'
+];
+
+function normalizeUiViewMode(value) {
+  const mode = toText(value).toLowerCase();
+  if (mode === 'pc' || mode === 'touch') {
+    return mode;
+  }
+
+  return 'global';
+}
+
+function normalizeUiViewModes(value) {
+  const input = value && typeof value === 'object' ? value : {};
+  const normalized = {};
+
+  for (const viewName of UI_MODE_VIEWS) {
+    const mode = normalizeUiViewMode(input[viewName]);
+    if (mode !== 'global') {
+      normalized[viewName] = mode;
+    }
+  }
+
+  return normalized;
+}
+
 function normalizeThermalPrinterName(value) {
   return toText(value);
 }
@@ -1516,6 +1552,7 @@ function createErpService() {
         data.meta.uiSettings || {
           themeMode: 'auto',
           uiMode: 'pc',
+          viewModes: {},
           thermalAutoPrintEnabled: false,
           thermalPrinterName: ''
         }
@@ -1528,6 +1565,7 @@ function createErpService() {
     const input = payload && typeof payload === 'object' ? payload : {};
     const hasThemeMode = Object.prototype.hasOwnProperty.call(input, 'themeMode');
     const hasUiMode = Object.prototype.hasOwnProperty.call(input, 'uiMode');
+    const hasViewModes = Object.prototype.hasOwnProperty.call(input, 'viewModes');
     const hasThermalEnabled = Object.prototype.hasOwnProperty.call(
       input,
       'thermalAutoPrintEnabled'
@@ -1542,6 +1580,7 @@ function createErpService() {
           : {
               themeMode: 'auto',
               uiMode: 'pc',
+              viewModes: {},
               thermalAutoPrintEnabled: false,
               thermalPrinterName: ''
             };
@@ -1550,6 +1589,9 @@ function createErpService() {
         ...current,
         themeMode: hasThemeMode ? normalizeThemeMode(input.themeMode) : normalizeThemeMode(current.themeMode),
         uiMode: hasUiMode ? normalizeUiMode(input.uiMode) : normalizeUiMode(current.uiMode),
+        viewModes: hasViewModes
+          ? normalizeUiViewModes(input.viewModes)
+          : normalizeUiViewModes(current.viewModes),
         thermalAutoPrintEnabled: hasThermalEnabled
           ? Boolean(input.thermalAutoPrintEnabled)
           : Boolean(current.thermalAutoPrintEnabled),
@@ -1658,13 +1700,13 @@ function createErpService() {
     store.mutate((data) => {
       if (barcode) {
         const duplicateBarcode = data.products.find(
-          (product) => product.barcode === barcode && product.id !== id
+          (product) => product.barcode === barcode && toText(product.id) !== id
         );
         assert(!duplicateBarcode, `Barcode ${barcode} already exists`);
       }
 
       if (id) {
-        const existing = data.products.find((product) => product.id === id);
+        const existing = data.products.find((product) => toText(product.id) === id);
         assert(existing, 'Product not found');
 
         if (!toText(existing.sku)) {
@@ -1726,14 +1768,14 @@ function createErpService() {
     assert(id, 'Product id is required');
 
     store.mutate((data) => {
-      const index = data.products.findIndex((product) => product.id === id);
+      const index = data.products.findIndex((product) => toText(product.id) === id);
       assert(index >= 0, 'Product not found');
 
       const usedInInvoice = data.invoices.some((invoice) =>
-        invoice.items.some((item) => item.productId === id)
+        invoice.items.some((item) => toText(item.productId) === id)
       );
       const usedInPurchase = data.purchases.some((purchase) =>
-        purchase.items.some((item) => item.productId === id)
+        purchase.items.some((item) => toText(item.productId) === id)
       );
 
       assert(!usedInInvoice && !usedInPurchase, 'Cannot delete product used in transactions');

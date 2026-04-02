@@ -203,12 +203,20 @@
 
             <form id="ui-mode-form" class="form-grid">
               <label>
-                Mode
+                Global Mode
                 <select id="ui-mode-select">
                   <option value="pc">PC (Keyboard + Mouse)</option>
                   <option value="touch">Touch POS</option>
                 </select>
               </label>
+
+              <div class="full-width ui-mode-page-wrap">
+                <p class="muted">Page-wise Interface Mode (Optional)</p>
+                <div id="ui-mode-page-grid" class="ui-mode-page-grid"></div>
+                <small class="muted">
+                  Set any page to PC or Touch. Keep "Use Global" to follow Global Mode.
+                </small>
+              </div>
 
               <div class="actions-row">
                 <button type="submit" class="btn primary" id="ui-mode-save-btn">Save Interface Mode</button>

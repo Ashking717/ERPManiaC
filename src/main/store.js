@@ -37,6 +37,23 @@ function normalizePaymentMethod(value) {
   return 'cash';
 }
 
+function normalizeRecordId(value) {
+  if (value === undefined || value === null) {
+    return randomUUID();
+  }
+
+  const text = String(value).trim();
+  return text || randomUUID();
+}
+
+function normalizeRefId(value) {
+  if (value === undefined || value === null) {
+    return '';
+  }
+
+  return String(value).trim();
+}
+
 const LICENSE_MAX_KEYS = 36;
 const LICENSE_KEY_DAYS = 31;
 const MAX_BUSINESS_LOGO_DATA_URL_LENGTH = 2800000;
@@ -82,10 +99,47 @@ function normalizeUiMode(value) {
   return mode === 'touch' ? 'touch' : 'pc';
 }
 
+const UI_MODE_VIEWS = [
+  'dashboard',
+  'products',
+  'customers',
+  'suppliers',
+  'purchases',
+  'expenses',
+  'billing',
+  'invoices',
+  'reports',
+  'settings'
+];
+
+function normalizeUiViewMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  if (mode === 'pc' || mode === 'touch') {
+    return mode;
+  }
+
+  return 'global';
+}
+
+function normalizeUiViewModes(source) {
+  const input = source && typeof source === 'object' ? source : {};
+  const result = {};
+
+  for (const viewName of UI_MODE_VIEWS) {
+    const mode = normalizeUiViewMode(input[viewName]);
+    if (mode !== 'global') {
+      result[viewName] = mode;
+    }
+  }
+
+  return result;
+}
+
 function defaultUiSettings() {
   return {
     themeMode: 'auto',
     uiMode: 'pc',
+    viewModes: {},
     thermalAutoPrintEnabled: false,
     thermalPrinterName: ''
   };
@@ -208,7 +262,7 @@ function normalizeProduct(product) {
   const packPrice = round2(toNumber(product.packPrice, retailPrice * packSize));
 
   return {
-    id: product.id || randomUUID(),
+    id: normalizeRecordId(product.id),
     sku: String(product.sku || '').trim().toUpperCase(),
     barcode: String(product.barcode || '').trim(),
     name: String(product.name || '').trim(),
@@ -231,7 +285,7 @@ function normalizeProduct(product) {
 
 function normalizeCustomer(customer) {
   return {
-    id: customer.id || randomUUID(),
+    id: normalizeRecordId(customer.id),
     name: String(customer.name || '').trim(),
     type: customer.type === 'wholesale' ? 'wholesale' : 'retail',
     phone: String(customer.phone || '').trim(),
@@ -244,7 +298,7 @@ function normalizeCustomer(customer) {
 
 function normalizeSupplier(supplier) {
   return {
-    id: supplier.id || randomUUID(),
+    id: normalizeRecordId(supplier.id),
     name: String(supplier.name || '').trim(),
     phone: String(supplier.phone || '').trim(),
     address: String(supplier.address || '').trim(),
@@ -263,6 +317,8 @@ function normalizeInvoice(invoice) {
 
   return {
     ...invoice,
+    id: normalizeRecordId(invoice.id),
+    customerId: normalizeRefId(invoice.customerId) || null,
     discount: round2(toNumber(invoice.discount, 0)),
     taxableValue: round2(toNumber(invoice.taxableValue, invoice.subtotal || 0)),
     gstEnabled: Boolean(invoice.gstEnabled),
@@ -279,7 +335,7 @@ function normalizeInvoice(invoice) {
     updatedAt: invoice.updatedAt || nowIso(),
     paymentHistory: Array.isArray(invoice.paymentHistory)
       ? invoice.paymentHistory.map((entry) => ({
-          id: entry.id || randomUUID(),
+          id: normalizeRecordId(entry.id),
           amount: round2(toNumber(entry.amount, 0)),
           note: String(entry.note || '').trim(),
           paymentMethod: normalizePaymentMethod(entry.paymentMethod || entry.mode || entry.method),
@@ -304,6 +360,7 @@ function normalizeInvoice(invoice) {
 
           return {
             ...item,
+            productId: normalizeRefId(item.productId),
             qty,
             baseQty,
             saleUnit,
@@ -321,6 +378,8 @@ function normalizeInvoice(invoice) {
 function normalizePurchase(purchase) {
   return {
     ...purchase,
+    id: normalizeRecordId(purchase.id),
+    supplierId: normalizeRefId(purchase.supplierId),
     discount: round2(toNumber(purchase.discount, 0)),
     taxableValue: round2(toNumber(purchase.taxableValue, purchase.subtotal || 0)),
     gstEnabled: Boolean(purchase.gstEnabled),
@@ -338,6 +397,7 @@ function normalizePurchase(purchase) {
     items: Array.isArray(purchase.items)
       ? purchase.items.map((item) => ({
           ...item,
+          productId: normalizeRefId(item.productId),
           qty: round2(toNumber(item.qty, 0)),
           unitCost: round2(toNumber(item.unitCost, 0)),
           lineTotal: round2(toNumber(item.lineTotal, 0))
@@ -349,6 +409,8 @@ function normalizePurchase(purchase) {
 function normalizeSupplierPayment(payment) {
   return {
     ...payment,
+    id: normalizeRecordId(payment.id),
+    supplierId: normalizeRefId(payment.supplierId),
     amount: round2(toNumber(payment.amount, 0)),
     paymentMethod: normalizePaymentMethod(payment.paymentMethod || payment.mode || payment.method),
     createdAt: payment.createdAt || nowIso(),
@@ -356,6 +418,7 @@ function normalizeSupplierPayment(payment) {
     allocations: Array.isArray(payment.allocations)
       ? payment.allocations.map((entry) => ({
           ...entry,
+          purchaseId: normalizeRefId(entry.purchaseId),
           amount: round2(toNumber(entry.amount, 0))
         }))
       : []
@@ -364,7 +427,7 @@ function normalizeSupplierPayment(payment) {
 
 function normalizeExpense(expense) {
   return {
-    id: expense.id || randomUUID(),
+    id: normalizeRecordId(expense.id),
     expenseNo: String(expense.expenseNo || '').trim(),
     category: String(expense.category || 'Other').trim() || 'Other',
     amount: round2(toNumber(expense.amount, 0)),
@@ -425,6 +488,7 @@ function normalizeUiSettings(uiSettingsSource) {
   return {
     themeMode: normalizeThemeMode(source.themeMode || defaults.themeMode),
     uiMode: normalizeUiMode(source.uiMode || defaults.uiMode),
+    viewModes: normalizeUiViewModes(source.viewModes),
     thermalAutoPrintEnabled: Boolean(source.thermalAutoPrintEnabled),
     thermalPrinterName: String(source.thermalPrinterName || '').trim()
   };

@@ -47,6 +47,18 @@ let touchTableLabelFrame = null;
 let touchTableObserver = null;
 const MAX_BUSINESS_LOGO_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_BUSINESS_LOGO_DATA_URL_LENGTH = 2800000;
+const UI_MODE_VIEWS = [
+  { id: 'dashboard', label: 'Dashboard' },
+  { id: 'products', label: 'Products' },
+  { id: 'customers', label: 'Customers' },
+  { id: 'suppliers', label: 'Suppliers' },
+  { id: 'purchases', label: 'Purchases' },
+  { id: 'expenses', label: 'Expenses' },
+  { id: 'billing', label: 'Billing' },
+  { id: 'invoices', label: 'Invoices' },
+  { id: 'reports', label: 'Reports' },
+  { id: 'settings', label: 'Settings' }
+];
 
 function getApi() {
   if (!window.erpApi) {
@@ -498,14 +510,49 @@ function normalizeUiMode(value) {
   return mode === 'touch' ? 'touch' : 'pc';
 }
 
+function normalizeUiViewMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  if (mode === 'pc' || mode === 'touch') {
+    return mode;
+  }
+
+  return 'global';
+}
+
+function normalizeUiViewModes(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const normalized = {};
+
+  for (const view of UI_MODE_VIEWS) {
+    const mode = normalizeUiViewMode(source[view.id]);
+    if (mode !== 'global') {
+      normalized[view.id] = mode;
+    }
+  }
+
+  return normalized;
+}
+
 function normalizeUiSettingsForUi(settings) {
   const source = settings && typeof settings === 'object' ? settings : {};
   return {
     themeMode: normalizeThemeMode(source.themeMode),
     uiMode: normalizeUiMode(source.uiMode),
+    viewModes: normalizeUiViewModes(source.viewModes),
     thermalAutoPrintEnabled: Boolean(source.thermalAutoPrintEnabled),
     thermalPrinterName: String(source.thermalPrinterName || '').trim()
   };
+}
+
+function resolveUiModeForView(viewName, settingsInput = state.uiSettings) {
+  const settings = normalizeUiSettingsForUi(settingsInput);
+  const normalizedView = String(viewName || '').trim().toLowerCase();
+  const overrideMode = normalizeUiViewMode(settings.viewModes && settings.viewModes[normalizedView]);
+  if (overrideMode === 'pc' || overrideMode === 'touch') {
+    return overrideMode;
+  }
+
+  return normalizeUiMode(settings.uiMode);
 }
 
 function normalizeBusinessLogoDataUrl(value) {
@@ -590,15 +637,11 @@ function applyUiMode(modeInput) {
   document.documentElement.dataset.uiMode = mode;
   document.body.classList.toggle('touch-ui', mode === 'touch');
 
-  if (dom.uiModeSelect && dom.uiModeSelect.value !== mode) {
-    dom.uiModeSelect.value = mode;
-  }
-
   scheduleTouchTableLabels();
 }
 
-function isTouchUiModeActive() {
-  return normalizeUiMode(state.uiSettings && state.uiSettings.uiMode) === 'touch';
+function isTouchUiModeActive(viewName = state.currentView || 'dashboard') {
+  return resolveUiModeForView(viewName) === 'touch';
 }
 
 function focusBillingScannerInput() {
@@ -768,6 +811,7 @@ function cacheDom() {
   dom.businessSaveBtn = document.getElementById('business-save-btn');
   dom.uiModeForm = document.getElementById('ui-mode-form');
   dom.uiModeSelect = document.getElementById('ui-mode-select');
+  dom.uiModePageGrid = document.getElementById('ui-mode-page-grid');
   dom.uiModeSaveBtn = document.getElementById('ui-mode-save-btn');
   dom.backupForm = document.getElementById('backup-form');
   dom.backupEnabled = document.getElementById('backup-enabled');
@@ -1167,6 +1211,80 @@ function bindThemeMode() {
   });
 }
 
+function renderUiModePageSettings() {
+  if (!dom.uiModePageGrid) {
+    return;
+  }
+
+  const uiSettings = normalizeUiSettingsForUi(state.uiSettings);
+  dom.uiModePageGrid.innerHTML = UI_MODE_VIEWS
+    .map((view) => {
+      const selectedMode = normalizeUiViewMode(
+        uiSettings.viewModes && uiSettings.viewModes[view.id]
+      );
+
+      return `
+        <label class="ui-mode-page-item">
+          <span>${view.label}</span>
+          <select data-ui-view-mode="${view.id}">
+            <option value="global">Use Global</option>
+            <option value="pc" ${selectedMode === 'pc' ? 'selected' : ''}>PC</option>
+            <option value="touch" ${selectedMode === 'touch' ? 'selected' : ''}>Touch</option>
+          </select>
+        </label>
+      `;
+    })
+    .join('');
+}
+
+function readUiModeSettingsFromForm() {
+  const uiMode = normalizeUiMode(dom.uiModeSelect ? dom.uiModeSelect.value : 'pc');
+  const viewModes = {};
+  if (dom.uiModePageGrid) {
+    dom.uiModePageGrid.querySelectorAll('select[data-ui-view-mode]').forEach((selectNode) => {
+      const viewName = String(selectNode.dataset.uiViewMode || '').trim().toLowerCase();
+      if (!viewName) {
+        return;
+      }
+
+      const mode = normalizeUiViewMode(selectNode.value);
+      if (mode === 'pc' || mode === 'touch') {
+        viewModes[viewName] = mode;
+      }
+    });
+  }
+
+  return {
+    uiMode,
+    viewModes: normalizeUiViewModes(viewModes)
+  };
+}
+
+function uiModeSettingsEqual(a, b) {
+  const first = normalizeUiSettingsForUi(a);
+  const second = normalizeUiSettingsForUi(b);
+  if (first.uiMode !== second.uiMode) {
+    return false;
+  }
+
+  const firstModes = normalizeUiViewModes(first.viewModes);
+  const secondModes = normalizeUiViewModes(second.viewModes);
+  const firstKeys = Object.keys(firstModes).sort();
+  const secondKeys = Object.keys(secondModes).sort();
+  if (firstKeys.length !== secondKeys.length) {
+    return false;
+  }
+
+  for (let index = 0; index < firstKeys.length; index += 1) {
+    const key = firstKeys[index];
+    if (key !== secondKeys[index] || firstModes[key] !== secondModes[key]) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function bindUiMode() {
   if (!dom.uiModeForm || !dom.uiModeSelect) {
     return;
@@ -1174,14 +1292,18 @@ function bindUiMode() {
 
   let uiModeSaveInFlight = false;
 
-  const persistUiMode = async (nextUiMode, options = {}) => {
+  const persistUiModeSettings = async (nextSettings, options = {}) => {
     const { notify = true } = options;
     const previousSettings = normalizeUiSettingsForUi(state.uiSettings);
     const previousStatus = dom.statusPill.textContent;
-    const normalizedNextMode = normalizeUiMode(nextUiMode);
+    const normalizedNextSettings = {
+      ...previousSettings,
+      uiMode: normalizeUiMode(nextSettings && nextSettings.uiMode),
+      viewModes: normalizeUiViewModes(nextSettings && nextSettings.viewModes)
+    };
 
-    if (normalizedNextMode === previousSettings.uiMode) {
-      applyUiMode(normalizedNextMode);
+    if (uiModeSettingsEqual(previousSettings, normalizedNextSettings)) {
+      applyUiMode(resolveUiModeForView(state.currentView || 'dashboard', previousSettings));
       return true;
     }
 
@@ -1190,27 +1312,21 @@ function bindUiMode() {
     }
 
     uiModeSaveInFlight = true;
-    state.uiSettings = {
-      ...previousSettings,
-      uiMode: normalizedNextMode
-    };
-    applyUiMode(normalizedNextMode);
+    state.uiSettings = normalizedNextSettings;
+    applyUiMode(resolveUiModeForView(state.currentView || 'dashboard', state.uiSettings));
 
     try {
       setStatus('Saving interface mode...');
-      const updated = await invoke('upsertUiSettings', { uiMode: normalizedNextMode });
+      const updated = await invoke('upsertUiSettings', {
+        uiMode: normalizedNextSettings.uiMode,
+        viewModes: normalizedNextSettings.viewModes
+      });
       state.uiSettings = normalizeUiSettingsForUi(
-        updated || {
-          ...previousSettings,
-          uiMode: normalizedNextMode
-        }
+        updated || normalizedNextSettings
       );
       renderUiSettings();
       if (notify) {
         showToast('Interface mode updated');
-      }
-      if (normalizedNextMode === 'touch') {
-        switchView('billing');
       }
       setStatus(previousStatus);
       return true;
@@ -1225,15 +1341,10 @@ function bindUiMode() {
     }
   };
 
-  dom.uiModeSelect.addEventListener('change', () => {
-    const nextUiMode = normalizeUiMode(dom.uiModeSelect.value);
-    persistUiMode(nextUiMode, { notify: false });
-  });
-
   dom.uiModeForm.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const nextUiMode = normalizeUiMode(dom.uiModeSelect.value);
-    await persistUiMode(nextUiMode, { notify: true });
+    const nextSettings = readUiModeSettingsFromForm();
+    await persistUiModeSettings(nextSettings, { notify: true });
   });
 }
 
@@ -1791,7 +1902,7 @@ function bindProducts() {
     }
 
     const { action, id } = button.dataset;
-    const product = state.products.find((entry) => entry.id === id);
+    const product = state.products.find((entry) => String(entry.id) === String(id));
 
     if (!product) {
       return;
@@ -3290,7 +3401,9 @@ function bindReports() {
 
 function switchView(view) {
   state.currentView = view;
-  const isTouchMode = isTouchUiModeActive();
+  const effectiveMode = resolveUiModeForView(view);
+  applyUiMode(effectiveMode);
+  const isTouchMode = effectiveMode === 'touch';
 
   document.querySelectorAll('.view').forEach((section) => {
     section.classList.toggle('active', section.id === `view-${view}`);
@@ -3983,7 +4096,11 @@ function renderBackupSettings() {
 function renderUiSettings() {
   const uiSettings = normalizeUiSettingsForUi(state.uiSettings);
   state.uiSettings = uiSettings;
-  applyUiMode(uiSettings.uiMode);
+  if (dom.uiModeSelect) {
+    dom.uiModeSelect.value = uiSettings.uiMode;
+  }
+  renderUiModePageSettings();
+  applyUiMode(resolveUiModeForView(state.currentView || 'dashboard', uiSettings));
   applyThemeMode(uiSettings.themeMode);
   renderThermalSettings();
 }
@@ -5605,7 +5722,7 @@ async function initializeApp() {
   cacheDom();
   ensureTouchTableObserver();
   state.uiSettings = normalizeUiSettingsForUi({});
-  applyUiMode(state.uiSettings.uiMode);
+  applyUiMode(resolveUiModeForView('dashboard', state.uiSettings));
   applyThemeMode(state.uiSettings.themeMode);
   bindLicense();
   bindNavigation();
@@ -5642,7 +5759,7 @@ async function initializeApp() {
     await reloadData();
     await refreshThermalPrinters({ silentError: true });
     if (state.licenseStatus?.isActive) {
-      if (isTouchUiModeActive()) {
+      if (resolveUiModeForView('billing') === 'touch') {
         switchView('billing');
       }
       setStatus('Live');

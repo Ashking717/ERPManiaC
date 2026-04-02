@@ -408,6 +408,46 @@ textarea:focus {
   display: none !important;
 }
 
+.ui-mode-page-wrap {
+  display: grid;
+  gap: 8px;
+}
+
+.ui-mode-page-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.ui-mode-page-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: #f9fcf7;
+}
+
+.ui-mode-page-item span {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+.ui-mode-page-item select {
+  min-width: 128px;
+}
+
+@media (max-width: 960px) {
+  .ui-mode-page-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .logo-preview-wrap {
   display: flex;
   align-items: center;
@@ -1724,6 +1764,19 @@ html[data-ui-mode="touch"] .form-grid label.full-width {
   grid-column: 1 / -1;
 }
 
+html[data-ui-mode="touch"] .ui-mode-page-item {
+  border: 1px solid var(--touch-border);
+  background: linear-gradient(165deg, var(--touch-panel-strong) 0%, #f3faef 100%);
+}
+
+html[data-ui-mode="touch"][data-theme="dark"] .ui-mode-page-item {
+  background: linear-gradient(165deg, #1f2b3f 0%, #1a2537 100%);
+}
+
+html[data-ui-mode="touch"] .ui-mode-page-item span {
+  color: var(--touch-text);
+}
+
 html[data-ui-mode="touch"] input,
 html[data-ui-mode="touch"] select,
 html[data-ui-mode="touch"] textarea {
@@ -1852,19 +1905,22 @@ html[data-ui-mode="touch"] #view-billing .billing-grid {
 }
 
 html[data-ui-mode="touch"] #view-billing.active {
-  height: calc(100vh - 286px);
+  flex: 1;
   min-height: 0;
-  overflow: hidden;
+  height: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 8px;
 }
 
 html[data-ui-mode="touch"] #view-billing .touch-pos-workspace {
   display: grid;
   grid-template-columns: 150px minmax(0, 1fr) minmax(320px, 372px);
   gap: 10px;
-  align-items: stretch;
+  align-items: start;
   min-height: 0;
-  height: 100%;
-  overflow: hidden;
+  height: auto;
+  overflow: visible;
 }
 
 html[data-ui-mode="touch"] #view-billing .panel {
@@ -1886,8 +1942,8 @@ html[data-ui-mode="touch"] #view-billing .touch-pos-field {
 
 html[data-ui-mode="touch"] #view-billing .touch-pos-field input,
 html[data-ui-mode="touch"] #view-billing .touch-pos-field select {
-  min-height: 46px;
-  font-size: 15px;
+  min-height: 40px;
+  font-size: 14px;
 }
 
 html[data-ui-mode="touch"] .touch-pos-categories,
@@ -2008,9 +2064,12 @@ html[data-ui-mode="touch"] .touch-pos-product-card:active {
 
 html[data-ui-mode="touch"] .touch-pos-cart {
   display: grid;
-  grid-template-rows: auto auto minmax(160px, 1fr) auto auto auto auto;
-  gap: 8px;
+  grid-template-rows: auto auto minmax(72px, 1fr) auto auto auto auto;
+  gap: 6px;
   min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
 }
 
 html[data-ui-mode="touch"] .touch-pos-total-card {
@@ -2029,7 +2088,7 @@ html[data-ui-mode="touch"] .touch-pos-total-card p {
 }
 
 html[data-ui-mode="touch"] .touch-pos-total-card strong {
-  font-size: 28px;
+  font-size: 24px;
   line-height: 1.1;
 }
 
@@ -2055,7 +2114,7 @@ html[data-ui-mode="touch"] .touch-pos-cart-lines {
   padding: 6px;
   display: grid;
   align-content: start;
-  gap: 6px;
+  gap: 5px;
   min-height: 0;
 }
 
@@ -2112,22 +2171,22 @@ html[data-ui-mode="touch"] .touch-pos-summary p {
   margin: 4px 0;
   display: flex;
   justify-content: space-between;
-  font-size: 15px;
+  font-size: 14px;
 }
 
 html[data-ui-mode="touch"] .touch-pos-keypad {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
+  gap: 4px;
 }
 
 html[data-ui-mode="touch"] .touch-pos-keypad button {
-  min-height: 40px;
-  border-radius: 9px;
+  min-height: 30px;
+  border-radius: 8px;
   border: 1px solid #28583b;
   background: #2f6b46;
   color: #f2f8ff;
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 700;
 }
 
