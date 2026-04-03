@@ -59,11 +59,7 @@ Generate all valid 36 keys:
 npm run license:keys
 ```
 
-## Tech Stack
 
-- Electron
-- Vanilla HTML/CSS/JS
-- Local JSON datastore
 
 ## Local Data Storage
 
@@ -249,4 +245,3 @@ git push -u origin main
 - `src/renderer/app.js`: renderer logic
 - `scripts/generate-license-codes.js`: license key generation
 - `scripts/download-ocr-eng.js`: OCR model download
-

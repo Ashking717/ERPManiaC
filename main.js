@@ -28,7 +28,7 @@ function createMainWindow() {
     }
   });
 
-  mainWindow.loadFile(path.join(__dirname, 'src/renderer/index.html'));
+  mainWindow.loadFile(path.join(__dirname, 'src/renderer/dist/index.html'));
   mainWindow.once('ready-to-show', () => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       return;
@@ -45,6 +45,7 @@ function withResponse(handler) {
       const data = await handler(...args);
       return { ok: true, data };
     } catch (error) {
+      console.error(error);
       return { ok: false, error: error.message || 'Unexpected error' };
     }
   };
@@ -232,6 +233,44 @@ function toSafeFilePart(value, fallback = 'ERPManiaC') {
   return cleaned || fallback;
 }
 
+async function saveExportFile(payload = {}) {
+  const fileName = toSafeFilePart(payload.fileName, 'ERPManiaC Export');
+  const extension = String(payload.extension || '').trim().toLowerCase();
+  const normalizedExtension =
+    extension === 'json' ? 'json' : extension === 'csv' ? 'csv' : 'txt';
+  const title =
+    String(payload.title || '').trim() || `Save ${normalizedExtension.toUpperCase()} Export`;
+  const content = String(payload.content || '');
+  const documentsPath = app.getPath('documents');
+  const defaultPath = path.join(documentsPath, fileName);
+
+  const saveResult = await dialog.showSaveDialog(mainWindow || undefined, {
+    title,
+    defaultPath,
+    filters: [
+      {
+        name:
+          normalizedExtension === 'json'
+            ? 'JSON Files'
+            : normalizedExtension === 'csv'
+              ? 'CSV Files'
+              : 'Text Files',
+        extensions: [normalizedExtension]
+      }
+    ]
+  });
+
+  if (saveResult.canceled || !saveResult.filePath) {
+    return { saved: false, canceled: true };
+  }
+
+  fs.writeFileSync(saveResult.filePath, content, 'utf8');
+  return {
+    saved: true,
+    filePath: saveResult.filePath
+  };
+}
+
 async function pickBackupFolder(currentPath = '') {
   const normalizedCurrent = typeof currentPath === 'string' ? currentPath.trim() : '';
   const fallbackPath = app.getPath('documents');
@@ -310,6 +349,13 @@ function registerIpc() {
     withResponse((payload) => erpService.activateLicenseKey(payload))
   );
   ipcMain.handle(
+    'erp:close-app',
+    withResponse(() => {
+      app.quit();
+      return { closing: true };
+    })
+  );
+  ipcMain.handle(
     'erp:upsert-ui-settings',
     withResponse((payload) => erpService.upsertUiSettings(payload))
   );
@@ -327,6 +373,10 @@ function registerIpc() {
   );
 
   ipcMain.handle('erp:upsert-product', withResponse((payload) => erpService.upsertProduct(payload)));
+  ipcMain.handle(
+    'erp:lookup-open-food-facts-product',
+    withResponse((payload) => erpService.lookupOpenFoodFactsProduct(payload))
+  );
   ipcMain.handle('erp:delete-product', withResponse((productId) => erpService.deleteProduct(productId)));
 
   ipcMain.handle('erp:upsert-customer', withResponse((payload) => erpService.upsertCustomer(payload)));
@@ -343,6 +393,10 @@ function registerIpc() {
   );
   ipcMain.handle('erp:create-purchase', withResponse((payload) => erpService.createPurchase(payload)));
   ipcMain.handle('erp:update-purchase', withResponse((payload) => erpService.updatePurchase(payload)));
+  ipcMain.handle('erp:upsert-gst-note', withResponse((payload) => erpService.upsertGstNote(payload)));
+  ipcMain.handle('erp:delete-gst-note', withResponse((noteId) => erpService.deleteGstNote(noteId)));
+  ipcMain.handle('erp:record-gst-filing', withResponse((payload) => erpService.recordGstFiling(payload)));
+  ipcMain.handle('erp:unlock-gst-period', withResponse((payload) => erpService.unlockGstPeriod(payload)));
   ipcMain.handle(
     'erp:create-supplier-payment',
     withResponse((payload) => erpService.createSupplierPayment(payload))
@@ -369,6 +423,15 @@ function registerIpc() {
     'erp:get-daily-pnl',
     withResponse((inputDate) => erpService.getDailyProfitLoss(inputDate))
   );
+  ipcMain.handle(
+    'erp:get-gst-filing-data',
+    withResponse((payload) => erpService.getGstFilingData(payload))
+  );
+  ipcMain.handle(
+    'erp:get-gst-portal-export',
+    withResponse((payload) => erpService.getGstPortalExport(payload))
+  );
+  ipcMain.handle('erp:save-export-file', withResponse((payload) => saveExportFile(payload)));
   ipcMain.handle('erp:get-printers', withResponse(() => getAvailablePrinters()));
   ipcMain.handle(
     'erp:auto-print-invoice-thermal',

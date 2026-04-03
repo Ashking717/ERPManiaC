@@ -7,6 +7,62 @@ function escapeHtml(value) {
     .replaceAll("'", '&#039;');
 }
 
+function sanitizeNarrationText(value) {
+  const lines = String(value || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => {
+      const normalized = line.toLowerCase();
+      return ![
+        'computer generated invoice',
+        'computer generated invoice.',
+        'computer generated receipt',
+        'computer generated receipt.',
+        'this is a computer generated invoice',
+        'this is a computer generated invoice.',
+        'this is a computer generated receipt',
+        'this is a computer generated receipt.'
+      ].includes(normalized);
+    });
+
+  return lines.join('\n').trim();
+}
+
+function round2(value) {
+  return Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
+}
+
+function splitTaxValue(value) {
+  const totalValue = round2(value);
+  const primaryAmount = round2(totalValue / 2);
+
+  return {
+    primary: primaryAmount,
+    secondary: round2(totalValue - primaryAmount)
+  };
+}
+
+function gstBreakdownForInvoice(invoice) {
+  const gstRate = round2(Number(invoice && invoice.gstRate) || 0);
+  const gstAmount = round2(Number(invoice && invoice.gstAmount) || 0);
+  const gstApplied = Boolean(invoice && invoice.gstEnabled) || gstRate > 0 || gstAmount > 0;
+  const taxableValue = round2(
+    Number(invoice && invoice.taxableValue) || Math.max((Number(invoice && invoice.total) || 0) - gstAmount, 0)
+  );
+  const { primary: sgstRate, secondary: cgstRate } = splitTaxValue(gstRate);
+  const { primary: sgstAmount, secondary: cgstAmount } = splitTaxValue(gstAmount);
+
+  return {
+    gstApplied,
+    taxableValue,
+    sgstRate,
+    cgstRate,
+    sgstAmount,
+    cgstAmount
+  };
+}
+
 function money(amount) {
   const parsed = Number(amount) || 0;
   return `Rs ${parsed.toFixed(2)}`;
@@ -62,6 +118,8 @@ function normalizeBusinessLogoDataUrl(value) {
 
 function renderA4InvoiceHtml({ invoice, business }) {
   const storeLogoDataUrl = normalizeBusinessLogoDataUrl(business && business.logoDataUrl);
+  const footerNote = sanitizeNarrationText(invoice.notes);
+  const invoiceNumberText = String(invoice.invoiceNo || invoice.id || '').trim();
   const itemRows = invoice.items
     .map(
       (item, index) => `
@@ -79,16 +137,29 @@ function renderA4InvoiceHtml({ invoice, business }) {
       `
     )
     .join('');
-
-  const gstLabel = invoice.gstEnabled
-    ? `GST (${invoice.gstRate.toFixed(2)}%)`
-    : 'GST (Not Applied)';
+  const gstBreakdown = gstBreakdownForInvoice(invoice);
+  const taxRows = gstBreakdown.gstApplied
+    ? `
+        <tr>
+          <td>Taxable Value</td>
+          <td>${money(gstBreakdown.taxableValue)}</td>
+        </tr>
+        <tr>
+          <td>SGST (${gstBreakdown.sgstRate.toFixed(2)}%)</td>
+          <td>${money(gstBreakdown.sgstAmount)}</td>
+        </tr>
+        <tr>
+          <td>CGST (${gstBreakdown.cgstRate.toFixed(2)}%)</td>
+          <td>${money(gstBreakdown.cgstAmount)}</td>
+        </tr>
+      `
+    : '';
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>${escapeHtml(invoice.invoiceNo)}</title>
+  <title>${escapeHtml(invoiceNumberText || 'Invoice')}</title>
   <style>
     * {
       box-sizing: border-box;
@@ -231,9 +302,9 @@ function renderA4InvoiceHtml({ invoice, business }) {
     <section class="row">
       <div>
         <h1>Invoice</h1>
-        <p><strong>Invoice No:</strong> ${escapeHtml(invoice.invoiceNo)}</p>
+        <p><strong>Invoice No:</strong> ${escapeHtml(invoiceNumberText || '-')}</p>
         <p><strong>Date:</strong> ${escapeHtml(formatDate(invoice.createdAt))}</p>
-        <p><strong>Type:</strong> ${escapeHtml(invoice.channel.toUpperCase())}</p>
+        <p><strong>Type:</strong> ${escapeHtml((invoice.channel || 'POS').toUpperCase())}</p>
       </div>
       <div>
         ${storeLogoDataUrl ? `<img class="store-logo" src="${escapeHtml(storeLogoDataUrl)}" alt="Store Logo" />` : ''}
@@ -247,10 +318,10 @@ function renderA4InvoiceHtml({ invoice, business }) {
     <section class="row">
       <div>
         <h2>Bill To</h2>
-        <p><strong>${escapeHtml(invoice.customerSnapshot.name)}</strong></p>
-        <p>${escapeHtml(invoice.customerSnapshot.address || '')}</p>
-        <p><strong>Phone:</strong> ${escapeHtml(invoice.customerSnapshot.phone || '-')}</p>
-        <p><strong>GSTIN:</strong> ${escapeHtml(invoice.customerSnapshot.gstin || '-')}</p>
+        <p><strong>${escapeHtml((invoice.customerSnapshot && invoice.customerSnapshot.name) || 'Walk-in Customer')}</strong></p>
+        <p>${escapeHtml((invoice.customerSnapshot && invoice.customerSnapshot.address) || '')}</p>
+        <p><strong>Phone:</strong> ${escapeHtml((invoice.customerSnapshot && invoice.customerSnapshot.phone) || '-')}</p>
+        <p><strong>GSTIN:</strong> ${escapeHtml((invoice.customerSnapshot && invoice.customerSnapshot.gstin) || '-')}</p>
       </div>
       <div>
         <h2>Payment</h2>
@@ -287,10 +358,7 @@ function renderA4InvoiceHtml({ invoice, business }) {
           <td>Discount</td>
           <td>${money(invoice.discount)}</td>
         </tr>
-        <tr>
-          <td>${gstLabel}</td>
-          <td>${money(invoice.gstAmount)}</td>
-        </tr>
+        ${taxRows}
         <tr class="total">
           <td>Net Total</td>
           <td>${money(invoice.total)}</td>
@@ -298,10 +366,7 @@ function renderA4InvoiceHtml({ invoice, business }) {
       </tbody>
     </table>
 
-    <div class="footer">
-      <p><strong></strong> ${escapeHtml(invoice.notes || '-')}</p>
-      <p>Computer Generated Invoice.</p>
-    </div>
+    ${footerNote ? `<div class="footer"><p>${escapeHtml(footerNote)}</p></div>` : ''}
   </main>
 </body>
 </html>`;
@@ -309,6 +374,8 @@ function renderA4InvoiceHtml({ invoice, business }) {
 
 function renderThermalInvoiceHtml({ invoice, business }) {
   const storeLogoDataUrl = normalizeBusinessLogoDataUrl(business && business.logoDataUrl);
+  const footerNote = sanitizeNarrationText(invoice.notes);
+  const invoiceNumberText = String(invoice.invoiceNo || invoice.id || '').trim();
   const itemRows = invoice.items
     .map(
       (item) => `
@@ -321,15 +388,21 @@ function renderThermalInvoiceHtml({ invoice, business }) {
       `
     )
     .join('');
-
-  const gstLabel = invoice.gstEnabled ? `GST ${invoice.gstRate.toFixed(2)}%` : 'GST';
+  const gstBreakdown = gstBreakdownForInvoice(invoice);
   const customerName = escapeHtml((invoice.customerSnapshot && invoice.customerSnapshot.name) || 'Walk-in');
+  const thermalTaxRows = gstBreakdown.gstApplied
+    ? `
+      <div class="meta-row"><span>Taxable Value</span><span>${money(gstBreakdown.taxableValue)}</span></div>
+      <div class="meta-row"><span>SGST (${gstBreakdown.sgstRate.toFixed(2)}%)</span><span>${money(gstBreakdown.sgstAmount)}</span></div>
+      <div class="meta-row"><span>CGST (${gstBreakdown.cgstRate.toFixed(2)}%)</span><span>${money(gstBreakdown.cgstAmount)}</span></div>
+    `
+    : '';
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>${escapeHtml(invoice.invoiceNo)} Receipt</title>
+  <title>${escapeHtml(invoiceNumberText || 'Invoice')} Receipt</title>
   <style>
     @page {
       size: 80mm auto;
@@ -452,9 +525,9 @@ function renderThermalInvoiceHtml({ invoice, business }) {
     <div class="line"></div>
 
     <section>
-      <div class="meta-row"><span class="meta-label">Invoice</span><span>${escapeHtml(invoice.invoiceNo)}</span></div>
+      <div class="meta-row"><span class="meta-label">Invoice</span><span>${escapeHtml(invoiceNumberText || '-')}</span></div>
       <div class="meta-row"><span class="meta-label">Date</span><span>${escapeHtml(formatDate(invoice.createdAt))}</span></div>
-      <div class="meta-row"><span class="meta-label">Type</span><span>${escapeHtml(invoice.channel.toUpperCase())}</span></div>
+      <div class="meta-row"><span class="meta-label">Type</span><span>${escapeHtml((invoice.channel || 'POS').toUpperCase())}</span></div>
       <div class="meta-row"><span class="meta-label">Customer</span><span>${customerName}</span></div>
     </section>
 
@@ -479,7 +552,7 @@ function renderThermalInvoiceHtml({ invoice, business }) {
     <section class="totals">
       <div class="meta-row"><span>Sub Total</span><span>${money(invoice.subtotal)}</span></div>
       <div class="meta-row"><span>Discount</span><span>${money(invoice.discount)}</span></div>
-      <div class="meta-row"><span>${gstLabel}</span><span>${money(invoice.gstAmount)}</span></div>
+      ${thermalTaxRows}
       <div class="meta-row"><strong>Net Total</strong><strong>${money(invoice.total)}</strong></div>
       <div class="meta-row"><span>Paid (${escapeHtml(paymentModeLabel(invoice.paidMethod))})</span><span>${money(invoice.paidAmount)}</span></div>
       <div class="meta-row"><span>Balance</span><span>${money(invoice.balance)}</span></div>
@@ -487,10 +560,7 @@ function renderThermalInvoiceHtml({ invoice, business }) {
 
     <div class="line"></div>
 
-    <section class="center muted">
-      <div>${escapeHtml(invoice.notes || 'Thank you for your purchase')}</div>
-      <div>Computer Generated Invoice</div>
-    </section>
+    ${footerNote ? `<section class="center muted"><div>${escapeHtml(footerNote)}</div></section>` : ''}
   </main>
 </body>
 </html>`;

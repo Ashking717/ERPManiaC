@@ -14,6 +14,30 @@ const OCR_LANG_BASENAME = `${OCR_LANGUAGE}.traineddata`;
 const OCR_LANG_GZIP_BASENAME = `${OCR_LANG_BASENAME}.gz`;
 const BACKUP_ROLLING_FILE_NAME = 'ERPManiaC-Backup-Latest.json';
 const MAX_BUSINESS_LOGO_DATA_URL_LENGTH = 2800000;
+const OPEN_FACTS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const OPEN_FACTS_RATE_LIMIT_COOLDOWN_MS = 60 * 1000;
+const OPEN_FACTS_SOURCES = [
+  {
+    id: 'off',
+    name: 'Open Food Facts',
+    endpoint: 'https://world.openfoodfacts.org/api/v2/product'
+  },
+  {
+    id: 'obf',
+    name: 'Open Beauty Facts',
+    endpoint: 'https://world.openbeautyfacts.org/api/v2/product'
+  },
+  {
+    id: 'opf',
+    name: 'Open Products Facts',
+    endpoint: 'https://world.openproductsfacts.org/api/v2/product'
+  },
+  {
+    id: 'opff',
+    name: 'Open Pet Food Facts',
+    endpoint: 'https://world.openpetfoodfacts.org/api/v2/product'
+  }
+];
 
 function assert(condition, message) {
   if (!condition) {
@@ -27,6 +51,36 @@ function toText(value) {
   }
 
   return String(value).trim();
+}
+
+function sanitizeNarrationText(value) {
+  const lines = String(value || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => {
+      const normalized = line.toLowerCase();
+      return ![
+        'computer generated invoice',
+        'computer generated invoice.',
+        'computer generated receipt',
+        'computer generated receipt.',
+        'this is a computer generated invoice',
+        'this is a computer generated invoice.',
+        'this is a computer generated receipt',
+        'this is a computer generated receipt.'
+      ].includes(normalized);
+    });
+
+  return lines.join('\n').trim();
+}
+
+function normalizeHsnCode(value) {
+  return toText(value)
+    .toUpperCase()
+    .replace(/\s+/g, '')
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 8);
 }
 
 function toNumber(value, fallback = 0) {
@@ -44,6 +98,16 @@ function toNumber(value, fallback = 0) {
 
 function round2(value) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function splitTaxValue(value) {
+  const totalValue = round2(toNumber(value, 0));
+  const primaryAmount = round2(totalValue / 2);
+
+  return {
+    primary: primaryAmount,
+    secondary: round2(totalValue - primaryAmount)
+  };
 }
 
 function normalizeChannel(channel) {
@@ -84,6 +148,279 @@ function paymentMethodLabel(value) {
   return 'Other';
 }
 
+function normalizeBarcodeLookupInput(value) {
+  return toText(value).replace(/\s+/g, '').replace(/[^0-9]/g, '');
+}
+
+function pickFirstNonEmpty(...values) {
+  for (const value of values) {
+    const text = toText(value);
+    if (text) {
+      return text;
+    }
+  }
+
+  return '';
+}
+
+function buildOpenFoodFactsCategoryCandidates(product) {
+  const tags = Array.isArray(product && product.categories_tags_en)
+    ? product.categories_tags_en
+    : [];
+  const categories = toText(product && product.categories)
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  return [...tags, ...categories];
+}
+
+function mapOpenFoodFactsCategory(product) {
+  const candidates = buildOpenFoodFactsCategoryCandidates(product);
+
+  for (const entry of candidates) {
+    const value = toText(entry).toLowerCase();
+
+    if (!value) {
+      continue;
+    }
+
+    if (value.includes('beverage') || value.includes('drink') || value.includes('juice') || value.includes('tea') || value.includes('coffee') || value.includes('soft-drink') || value.includes('water')) {
+      return 'Beverages';
+    }
+    if (value.includes('snack') || value.includes('chip') || value.includes('biscuit') || value.includes('cookie') || value.includes('confection') || value.includes('chocolate') || value.includes('candy')) {
+      return 'Snacks';
+    }
+    if (value.includes('dairy') || value.includes('milk') || value.includes('cheese') || value.includes('yogurt') || value.includes('butter')) {
+      return 'Dairy';
+    }
+    if (value.includes('bread') || value.includes('bakery') || value.includes('cake') || value.includes('bun') || value.includes('pastry')) {
+      return 'Bakery';
+    }
+    if (value.includes('fruit') || value.includes('vegetable') || value.includes('produce')) {
+      return 'Fruits & Vegetables';
+    }
+    if (value.includes('rice') || value.includes('grain') || value.includes('cereal') || value.includes('flour') || value.includes('pasta')) {
+      return 'Rice & Grains';
+    }
+    if (value.includes('spice') || value.includes('masala') || value.includes('seasoning') || value.includes('condiment')) {
+      return 'Spices';
+    }
+    if (value.includes('frozen')) {
+      return 'Frozen Foods';
+    }
+    if (value.includes('cleaning') || value.includes('detergent') || value.includes('dishwashing') || value.includes('laundry')) {
+      return 'Cleaning';
+    }
+    if (value.includes('personal-care') || value.includes('cosmetic') || value.includes('soap') || value.includes('shampoo') || value.includes('toothpaste') || value.includes('skin-care')) {
+      return 'Personal Care';
+    }
+    if (value.includes('household') || value.includes('homecare') || value.includes('paper') || value.includes('kitchen')) {
+      return 'Household';
+    }
+  }
+
+  return 'General';
+}
+
+function fallbackCategoryForOpenFactsSource(sourceId) {
+  if (sourceId === 'obf') {
+    return 'Personal Care';
+  }
+  if (sourceId === 'opff') {
+    return 'Pet Care';
+  }
+  if (sourceId === 'opf') {
+    return 'Household';
+  }
+
+  return 'General';
+}
+
+function inferOpenFoodFactsUnitHint(product) {
+  const unit = toText(product && product.product_quantity_unit).toLowerCase();
+  const quantity = toText(product && product.quantity).toLowerCase();
+
+  if (['l', 'lt', 'ltr', 'litre', 'liter', 'ml', 'cl'].includes(unit)) {
+    return 'Litre';
+  }
+
+  if (['kg', 'g', 'gram', 'grams'].includes(unit)) {
+    return 'Kg';
+  }
+
+  if (quantity.includes('pack')) {
+    return 'Pack';
+  }
+
+  if (quantity.includes('piece') || quantity.includes('pcs') || quantity.includes('pc')) {
+    return 'Piece';
+  }
+
+  return 'Unit';
+}
+
+function buildOpenFoodFactsName(product) {
+  const productName = pickFirstNonEmpty(
+    product && product.product_name,
+    product && product.product_name_en,
+    product && product.generic_name
+  );
+  const brand = pickFirstNonEmpty(product && product.brands);
+
+  if (!productName) {
+    return '';
+  }
+
+  if (!brand) {
+    return productName;
+  }
+
+  const normalizedName = productName.toLowerCase();
+  const normalizedBrand = brand.toLowerCase();
+  if (normalizedName.includes(normalizedBrand)) {
+    return productName;
+  }
+
+  return `${brand} ${productName}`.trim();
+}
+
+async function fetchOpenFactsSourceProduct(source, barcode, rateLimitState) {
+  const nowTs = Date.now();
+  const rateLimitedUntil = rateLimitState.get(source.id) || 0;
+  if (rateLimitedUntil > nowTs) {
+    return {
+      status: 'rate_limited',
+      source,
+      retryAfterMs: rateLimitedUntil - nowTs
+    };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  const url = new URL(`${source.endpoint}/${barcode}.json`);
+  url.searchParams.set(
+    'fields',
+    [
+      'code',
+      'product_name',
+      'product_name_en',
+      'generic_name',
+      'brands',
+      'categories',
+      'categories_tags_en',
+      'quantity',
+      'product_quantity',
+      'product_quantity_unit'
+    ].join(',')
+  );
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'ERPManiaC/4.1.0 (OpenFactsLookup)'
+      },
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error && error.name === 'AbortError') {
+      return {
+        status: 'error',
+        source,
+        message: `${source.name} request timed out. Check your internet connection and try again.`
+      };
+    }
+
+    return {
+      status: 'error',
+      source,
+      message: `Could not reach ${source.name}. Check your internet connection and try again.`
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      return {
+        status: 'not_found',
+        source
+      };
+    }
+
+    if (response.status === 429) {
+      const retryAfterHeader = Number(response.headers.get('retry-after'));
+      const retryAfterMs =
+        Number.isFinite(retryAfterHeader) && retryAfterHeader > 0
+          ? retryAfterHeader * 1000
+          : OPEN_FACTS_RATE_LIMIT_COOLDOWN_MS;
+      rateLimitState.set(source.id, Date.now() + retryAfterMs);
+      return {
+        status: 'rate_limited',
+        source,
+        retryAfterMs
+      };
+    }
+
+    return {
+      status: 'error',
+      source,
+      message: `${source.name} lookup failed (${response.status})`
+    };
+  }
+
+  const result = await response.json();
+  const product = result && typeof result === 'object' ? result.product : null;
+  if (!(result && Number(result.status) === 1 && product)) {
+    return {
+      status: 'not_found',
+      source
+    };
+  }
+
+  const name = buildOpenFoodFactsName(product);
+  if (!name) {
+    return {
+      status: 'error',
+      source,
+      message: `${source.name} did not return a usable product name for this barcode`
+    };
+  }
+
+  const mappedCategory = mapOpenFoodFactsCategory(product);
+
+  return {
+    status: 'success',
+    source,
+    data: {
+      barcode,
+      name,
+      brand: pickFirstNonEmpty(product.brands),
+      category:
+        mappedCategory && mappedCategory !== 'General'
+          ? mappedCategory
+          : fallbackCategoryForOpenFactsSource(source.id),
+      unitHint: inferOpenFoodFactsUnitHint(product),
+      quantityLabel: pickFirstNonEmpty(product.quantity),
+      source: source.name,
+      sourceUrl: `${source.endpoint.replace('/api/v2/product', '')}/product/${barcode}`,
+      rawCategory: pickFirstNonEmpty(product.categories)
+    }
+  };
+}
+
+function getErrorHeadline(value, fallback = 'Unexpected error') {
+  const text = String(value || '').trim();
+  if (!text) {
+    return fallback;
+  }
+
+  return text.split('\n')[0].trim() || fallback;
+}
+
 function normalizeThemeMode(value) {
   const mode = toText(value).toLowerCase();
   if (mode === 'light' || mode === 'dark' || mode === 'auto') {
@@ -95,6 +432,17 @@ function normalizeThemeMode(value) {
 
 function normalizeUiMode(value) {
   return toText(value).toLowerCase() === 'touch' ? 'touch' : 'pc';
+}
+
+function normalizeReturnTypes(value) {
+  const source = Array.isArray(value) ? value : value ? [value] : [];
+  return Array.from(
+    new Set(
+      source
+        .map((entry) => toText(entry).toUpperCase())
+        .filter((entry) => entry === 'GSTR-1' || entry === 'GSTR-3B')
+    )
+  );
 }
 
 const UI_MODE_VIEWS = [
@@ -267,6 +615,78 @@ function paymentNumber(counter) {
 function expenseNumber(counter, inputDate) {
   const year = new Date(inputDate || Date.now()).getFullYear();
   return `EXP-${year}-${String(counter).padStart(5, '0')}`;
+}
+
+function gstNoteNumber(counter, noteType, inputDate) {
+  const dt = new Date(inputDate || Date.now());
+  const year = dt.getFullYear();
+  const month = String(dt.getMonth() + 1).padStart(2, '0');
+  const prefix = noteType === 'debit' ? 'DBN' : 'CRN';
+  return `${prefix}-${year}${month}-${String(counter).padStart(4, '0')}`;
+}
+
+function fallbackDocumentNumber(prefix, createdAt, id) {
+  const year = new Date(createdAt || Date.now()).getFullYear();
+  const suffix = toText(id).replace(/[^a-z0-9]/gi, '').toUpperCase().slice(0, 8);
+  return `${prefix}-${year}-${suffix || 'PENDING'}`;
+}
+
+function detectNextGstNoteCounter(data) {
+  const notes = Array.isArray(data && data.gstNotes) ? data.gstNotes : [];
+  let maxCounter = 0;
+
+  for (const note of notes) {
+    const noteNo = toText(note && note.noteNo);
+    const match = /(\d{4})$/.exec(noteNo);
+    if (!match) {
+      continue;
+    }
+
+    const numericValue = Math.trunc(toNumber(match[1], 0));
+    if (numericValue > maxCounter) {
+      maxCounter = numericValue;
+    }
+  }
+
+  return maxCounter + 1;
+}
+
+function findActiveGstLockForDate(data, inputDate) {
+  const locks =
+    data &&
+    data.meta &&
+    Array.isArray(data.meta.gstLockedPeriods)
+      ? data.meta.gstLockedPeriods
+      : [];
+  const targetDate = new Date(inputDate);
+  const targetTs = targetDate.getTime();
+  if (Number.isNaN(targetTs)) {
+    return null;
+  }
+
+  return (
+    locks.find((lock) => {
+      if (lock && lock.active === false) {
+        return false;
+      }
+
+      const startTs = new Date(lock && lock.rangeStart).getTime();
+      const endTs = new Date(lock && lock.rangeEnd).getTime();
+      if (Number.isNaN(startTs) || Number.isNaN(endTs)) {
+        return false;
+      }
+
+      return targetTs >= startTs && targetTs < endTs;
+    }) || null
+  );
+}
+
+function assertGstPeriodUnlocked(data, inputDate, actionLabel) {
+  const activeLock = findActiveGstLockForDate(data, inputDate);
+  assert(
+    !activeLock,
+    `${actionLabel} is not allowed because ${toText(activeLock && activeLock.periodLabel) || 'this filing period'} is locked. Unlock it in GST Filing first.`
+  );
 }
 
 function dateStart(inputDate) {
@@ -1008,14 +1428,14 @@ function buildDashboard(data) {
       id: invoice.id,
       invoiceNo: invoice.invoiceNo,
       channel: invoice.channel,
-      customerName: invoice.customerSnapshot.name,
+      customerName: invoice.customerSnapshot?.name || 'Walk-in Customer',
       total: invoice.total,
       createdAt: invoice.createdAt
     })),
     recentPurchases: purchases.slice(0, 8).map((purchase) => ({
       id: purchase.id,
       purchaseNo: purchase.purchaseNo,
-      supplierName: purchase.supplierSnapshot.name,
+      supplierName: purchase.supplierSnapshot?.name || 'Unknown Supplier',
       total: purchase.total,
       balance: purchase.balance,
       createdAt: purchase.createdAt
@@ -1160,6 +1580,8 @@ function getTesseractModule() {
 function createErpService() {
   const store = new LocalStore();
   let autoBackupInProgress = false;
+  const openFactsLookupCache = new Map();
+  const openFactsRateLimitState = new Map();
 
   function getLicenseStatus() {
     const data = store.get();
@@ -1543,6 +1965,7 @@ function createErpService() {
       suppliers: [...data.suppliers].sort((a, b) => a.name.localeCompare(b.name)),
       invoices: sortByTimeDesc(data.invoices),
       purchases: sortByTimeDesc(data.purchases),
+      gstNotes: sortByTimeDesc(Array.isArray(data.gstNotes) ? data.gstNotes : []),
       supplierPayments: sortByTimeDesc(data.supplierPayments),
       expenses: sortByTimeDesc(Array.isArray(data.expenses) ? data.expenses : []),
       dashboard: buildDashboard(data),
@@ -1553,10 +1976,21 @@ function createErpService() {
           themeMode: 'auto',
           uiMode: 'pc',
           viewModes: {},
+          setupCompleted: false,
+          billingGstEnabled: false,
+          billingGstRate: 0,
           thermalAutoPrintEnabled: false,
           thermalPrinterName: ''
         }
       ),
+      gstFilingHistory: [...(Array.isArray(data.meta.gstFilingHistory) ? data.meta.gstFilingHistory : [])].sort(
+        (a, b) => new Date(b.filedAt || 0) - new Date(a.filedAt || 0)
+      ),
+      gstLockedPeriods: [
+        ...(Array.isArray(data.meta.gstLockedPeriods) ? data.meta.gstLockedPeriods : [])
+      ]
+        .filter((entry) => entry.active !== false)
+        .sort((a, b) => new Date(b.lockedAt || 0) - new Date(a.lockedAt || 0)),
       licenseStatus: deriveLicenseStatus(data.meta.license)
     };
   }
@@ -1566,11 +2000,21 @@ function createErpService() {
     const hasThemeMode = Object.prototype.hasOwnProperty.call(input, 'themeMode');
     const hasUiMode = Object.prototype.hasOwnProperty.call(input, 'uiMode');
     const hasViewModes = Object.prototype.hasOwnProperty.call(input, 'viewModes');
+    const hasSetupCompleted = Object.prototype.hasOwnProperty.call(input, 'setupCompleted');
+    const hasBillingGstEnabled = Object.prototype.hasOwnProperty.call(input, 'billingGstEnabled');
+    const hasBillingGstRate = Object.prototype.hasOwnProperty.call(input, 'billingGstRate');
     const hasThermalEnabled = Object.prototype.hasOwnProperty.call(
       input,
       'thermalAutoPrintEnabled'
     );
     const hasThermalPrinterName = Object.prototype.hasOwnProperty.call(input, 'thermalPrinterName');
+    const nextBillingGstRate = round2(toNumber(input.billingGstRate, NaN));
+    if (hasBillingGstRate) {
+      assert(
+        Number.isFinite(nextBillingGstRate) && nextBillingGstRate >= 0,
+        'Billing GST rate cannot be negative'
+      );
+    }
     let persisted;
 
     store.mutate((data) => {
@@ -1581,6 +2025,9 @@ function createErpService() {
               themeMode: 'auto',
               uiMode: 'pc',
               viewModes: {},
+              setupCompleted: false,
+              billingGstEnabled: false,
+              billingGstRate: 0,
               thermalAutoPrintEnabled: false,
               thermalPrinterName: ''
             };
@@ -1592,6 +2039,15 @@ function createErpService() {
         viewModes: hasViewModes
           ? normalizeUiViewModes(input.viewModes)
           : normalizeUiViewModes(current.viewModes),
+        setupCompleted: hasSetupCompleted
+          ? Boolean(input.setupCompleted)
+          : Boolean(current.setupCompleted),
+        billingGstEnabled: hasBillingGstEnabled
+          ? Boolean(input.billingGstEnabled)
+          : Boolean(current.billingGstEnabled),
+        billingGstRate: hasBillingGstRate
+          ? Math.max(0, nextBillingGstRate)
+          : round2(Math.max(toNumber(current.billingGstRate, 0), 0)),
         thermalAutoPrintEnabled: hasThermalEnabled
           ? Boolean(input.thermalAutoPrintEnabled)
           : Boolean(current.thermalAutoPrintEnabled),
@@ -1652,7 +2108,9 @@ function createErpService() {
     assertLicenseActive();
 
     const id = toText(payload.id);
+    const sku = toText(payload.sku).toUpperCase();
     const barcode = toText(payload.barcode);
+    const hsnCode = normalizeHsnCode(payload.hsnCode);
     const name = toText(payload.name);
     const category = toText(payload.category) || 'General';
     const unit = toText(payload.unit) || 'Unit';
@@ -1698,6 +2156,13 @@ function createErpService() {
     let persisted;
 
     store.mutate((data) => {
+      if (sku) {
+        const duplicateSku = data.products.find(
+          (product) => String(product.sku || '').toUpperCase() === sku && toText(product.id) !== id
+        );
+        assert(!duplicateSku, `SKU ${sku} already exists`);
+      }
+
       if (barcode) {
         const duplicateBarcode = data.products.find(
           (product) => product.barcode === barcode && toText(product.id) !== id
@@ -1709,10 +2174,13 @@ function createErpService() {
         const existing = data.products.find((product) => toText(product.id) === id);
         assert(existing, 'Product not found');
 
-        if (!toText(existing.sku)) {
+        if (sku) {
+          existing.sku = sku;
+        } else if (!toText(existing.sku)) {
           existing.sku = getNextGeneratedSku(data);
         }
         existing.barcode = barcode;
+        existing.hsnCode = hsnCode;
         existing.name = name;
         existing.category = category;
         existing.unit = unit;
@@ -1734,8 +2202,9 @@ function createErpService() {
 
       const created = {
         id: randomUUID(),
-        sku: getNextGeneratedSku(data),
+        sku: sku || getNextGeneratedSku(data),
         barcode,
+        hsnCode,
         name,
         category,
         unit,
@@ -1761,6 +2230,89 @@ function createErpService() {
     return persisted;
   }
 
+  async function lookupOpenFoodFactsProduct(payload) {
+    assertLicenseActive();
+
+    const input = payload && typeof payload === 'object' ? payload : {};
+    const barcode = normalizeBarcodeLookupInput(input.barcode || payload);
+    const nowTs = Date.now();
+
+    assert(barcode.length >= 8, 'Enter a valid barcode to fetch product details');
+    assert(typeof fetch === 'function', 'Barcode lookup is not available in this build');
+
+    const existingProduct = (store.get().products || []).find(
+      (product) => normalizeBarcodeLookupInput(product.barcode) === barcode
+    );
+    if (existingProduct) {
+      return {
+        barcode,
+        name: toText(existingProduct.name),
+        brand: '',
+        category: toText(existingProduct.category) || 'General',
+        unitHint: toText(existingProduct.unit) || 'Unit',
+        quantityLabel: '',
+        source: 'ERPMania Catalog',
+        sourceUrl: '',
+        rawCategory: toText(existingProduct.category),
+        cached: true,
+        existingProductId: existingProduct.id
+      };
+    }
+
+    const cachedLookup = openFactsLookupCache.get(barcode);
+    if (cachedLookup && cachedLookup.expiresAt > nowTs) {
+      return clone(cachedLookup.data);
+    }
+
+    const attempts = [];
+
+    for (const source of OPEN_FACTS_SOURCES) {
+      const result = await fetchOpenFactsSourceProduct(source, barcode, openFactsRateLimitState);
+      attempts.push(result);
+
+      if (result.status === 'success') {
+        openFactsLookupCache.set(barcode, {
+          data: result.data,
+          expiresAt: Date.now() + OPEN_FACTS_CACHE_TTL_MS
+        });
+        return clone(result.data);
+      }
+    }
+
+    const rateLimitedAttempts = attempts.filter((attempt) => attempt.status === 'rate_limited');
+    const errorAttempt = attempts.find((attempt) => attempt.status === 'error');
+
+    if (errorAttempt) {
+      throw new Error(errorAttempt.message);
+    }
+
+    if (rateLimitedAttempts.length === attempts.length && rateLimitedAttempts.length > 0) {
+      const waitSeconds = Math.max(
+        1,
+        Math.ceil(
+          Math.max(...rateLimitedAttempts.map((attempt) => Number(attempt.retryAfterMs) || 0)) / 1000
+        )
+      );
+      throw new Error(
+        `Open Facts services are rate-limiting requests right now. Please wait about ${waitSeconds} seconds and try again.`
+      );
+    }
+
+    if (rateLimitedAttempts.length > 0) {
+      const waitSeconds = Math.max(
+        1,
+        Math.ceil(
+          Math.max(...rateLimitedAttempts.map((attempt) => Number(attempt.retryAfterMs) || 0)) / 1000
+        )
+      );
+      throw new Error(
+        `Barcode not found in the available Open Facts sources right now. Some services are rate-limited; try again in about ${waitSeconds} seconds.`
+      );
+    }
+
+    throw new Error('Barcode not found in Open Facts databases');
+  }
+
   function deleteProduct(productId) {
     assertLicenseActive();
 
@@ -1770,15 +2322,6 @@ function createErpService() {
     store.mutate((data) => {
       const index = data.products.findIndex((product) => toText(product.id) === id);
       assert(index >= 0, 'Product not found');
-
-      const usedInInvoice = data.invoices.some((invoice) =>
-        invoice.items.some((item) => toText(item.productId) === id)
-      );
-      const usedInPurchase = data.purchases.some((purchase) =>
-        purchase.items.some((item) => toText(item.productId) === id)
-      );
-
-      assert(!usedInInvoice && !usedInPurchase, 'Cannot delete product used in transactions');
       data.products.splice(index, 1);
       return data;
     });
@@ -1940,7 +2483,7 @@ function createErpService() {
     const paidAmountRaw = payload.paidAmount;
     const paidAmountInput = round2(toNumber(paidAmountRaw, 0));
     const paidMethod = normalizePaymentMethod(payload.paidMethod || payload.paymentMethod);
-    const notes = toText(payload.notes);
+    const notes = sanitizeNarrationText(payload.notes);
 
     assert(discount >= 0, 'Discount cannot be negative');
     assert(gstRate >= 0, 'GST rate cannot be negative');
@@ -1968,6 +2511,12 @@ function createErpService() {
     let createdInvoice;
 
     store.mutate((data) => {
+      assertGstPeriodUnlocked(
+        data,
+        nowIso(),
+        'Creating an invoice'
+      );
+
       let customer = data.customers.find((entry) => entry.name === 'Walk-in Customer') || null;
       if (customerId) {
         const requested = data.customers.find((entry) => entry.id === customerId);
@@ -1999,6 +2548,7 @@ function createErpService() {
           productId: product.id,
           sku: product.sku,
           barcode: product.barcode,
+          hsnCode: normalizeHsnCode(product.hsnCode),
           name: product.name,
           unit: pricing.unitLabel,
           qty: lineInput.qty,
@@ -2088,7 +2638,7 @@ function createErpService() {
     const paidMethod = normalizePaymentMethod(
       payload && (payload.paidMethod || payload.paymentMethod)
     );
-    const notes = toText(payload && payload.notes);
+    const notes = sanitizeNarrationText(payload && payload.notes);
 
     assert(invoiceId, 'Invoice id is required');
     assert(discount >= 0, 'Discount cannot be negative');
@@ -2102,6 +2652,7 @@ function createErpService() {
       const productId = toText(item && item.productId);
       const qty = round2(toNumber(item && item.qty, NaN));
       const saleUnit = toText(item && item.saleUnit).toLowerCase() === 'pack' ? 'pack' : 'loose';
+      const unitPriceInput = round2(toNumber(item && item.unitPrice, NaN));
 
       assert(productId, 'Each invoice item needs a product');
       assert(Number.isFinite(qty) && qty > 0, 'Item quantity must be greater than 0');
@@ -2109,7 +2660,8 @@ function createErpService() {
       itemLines.push({
         productId,
         qty,
-        saleUnit
+        saleUnit,
+        unitPrice: Number.isFinite(unitPriceInput) && unitPriceInput > 0 ? unitPriceInput : null
       });
     }
 
@@ -2118,6 +2670,11 @@ function createErpService() {
     store.mutate((data) => {
       const invoice = data.invoices.find((entry) => entry.id === invoiceId);
       assert(invoice, 'Invoice not found');
+      assertGstPeriodUnlocked(
+        data,
+        invoice.createdAt,
+        'Updating an invoice in a filed period'
+      );
 
       let customer = data.customers.find((entry) => entry.name === 'Walk-in Customer') || null;
       if (customerId) {
@@ -2160,7 +2717,11 @@ function createErpService() {
 
         const pricing = getPriceByChannel(product, channel, lineInput.qty, lineInput.saleUnit);
         const baseQty = round2(toNumber(pricing.baseQty, lineInput.qty));
-        const lineTotal = round2(pricing.unitPrice * lineInput.qty);
+        const unitPrice =
+          Number.isFinite(lineInput.unitPrice) && lineInput.unitPrice > 0
+            ? round2(lineInput.unitPrice)
+            : pricing.unitPrice;
+        const lineTotal = round2(unitPrice * lineInput.qty);
 
         subtotal = round2(subtotal + lineTotal);
         const requiredQty = round2(toNumber(stockRequired.get(product.id), 0) + baseQty);
@@ -2170,6 +2731,7 @@ function createErpService() {
           productId: product.id,
           sku: product.sku,
           barcode: product.barcode,
+          hsnCode: normalizeHsnCode(product.hsnCode),
           name: product.name,
           unit: pricing.unitLabel,
           qty: lineInput.qty,
@@ -2177,7 +2739,7 @@ function createErpService() {
           saleUnit: pricing.saleUnit,
           packSize: pricing.packSize,
           looseUnit: pricing.looseUnit,
-          unitPrice: pricing.unitPrice,
+          unitPrice,
           costPrice: round2(toNumber(product.costPrice, product.wholesalePrice)),
           lineTotal,
           pricingMode: pricing.pricingMode
@@ -2255,15 +2817,19 @@ function createErpService() {
 
     const supplierId = toText(payload.supplierId);
     const discount = round2(toNumber(payload.discount, 0));
-    const gstEnabled = Boolean(payload.gstEnabled);
-    const gstRate = gstEnabled ? round2(toNumber(payload.gstRate, 0)) : 0;
+    const rawGstRate = round2(toNumber(payload.gstRate, 0));
+    const rawGstAmount = round2(toNumber(payload.gstAmount, NaN));
+    const hasExplicitGstAmount = Number.isFinite(rawGstAmount) && rawGstAmount > 0;
+    const gstEnabled = Boolean(payload.gstEnabled) || rawGstRate > 0 || hasExplicitGstAmount;
+    const gstRate = gstEnabled ? rawGstRate : 0;
     const paidAmount = round2(toNumber(payload.paidAmount, 0));
     const paidMethod = normalizePaymentMethod(payload.paidMethod || payload.paymentMethod);
-    const notes = toText(payload.notes);
+    const notes = sanitizeNarrationText(payload.notes);
 
     assert(supplierId, 'Supplier is required');
     assert(discount >= 0, 'Discount cannot be negative');
     assert(gstRate >= 0, 'GST rate cannot be negative');
+    assert(!Number.isFinite(rawGstAmount) || rawGstAmount >= 0, 'GST amount cannot be negative');
     assert(paidAmount >= 0, 'Paid amount cannot be negative');
 
     const rawItems = Array.isArray(payload.items) ? payload.items : [];
@@ -2273,7 +2839,7 @@ function createErpService() {
     for (const item of rawItems) {
       const productId = toText(item.productId);
       const qty = round2(toNumber(item.qty, NaN));
-      const unitCost = round2(toNumber(item.unitCost, NaN));
+      const unitCost = round2(toNumber(item.unitCost ?? item.unitPrice, NaN));
 
       assert(productId, 'Each purchase item needs a product');
       assert(Number.isFinite(qty) && qty > 0, 'Purchase quantity must be greater than 0');
@@ -2291,6 +2857,12 @@ function createErpService() {
     let createdPurchase;
 
     store.mutate((data) => {
+      assertGstPeriodUnlocked(
+        data,
+        nowIso(),
+        'Creating a purchase'
+      );
+
       const supplier = data.suppliers.find((entry) => entry.id === supplierId);
       assert(supplier, 'Selected supplier does not exist');
 
@@ -2308,6 +2880,7 @@ function createErpService() {
           productId: product.id,
           sku: product.sku,
           barcode: product.barcode,
+          hsnCode: normalizeHsnCode(product.hsnCode),
           name: product.name,
           unit: product.unit,
           qty: line.qty,
@@ -2317,7 +2890,7 @@ function createErpService() {
       }
 
       const taxableValue = round2(Math.max(subtotal - discount, 0));
-      const gstAmount = round2(gstEnabled ? (taxableValue * gstRate) / 100 : 0);
+      const gstAmount = hasExplicitGstAmount ? rawGstAmount : round2(gstEnabled ? (taxableValue * gstRate) / 100 : 0);
       const total = round2(taxableValue + gstAmount);
       assert(paidAmount <= total, 'Paid amount cannot exceed purchase total');
 
@@ -2380,18 +2953,22 @@ function createErpService() {
     const purchaseId = toText(payload && (payload.id || payload.purchaseId));
     const supplierId = toText(payload && payload.supplierId);
     const discount = round2(toNumber(payload && payload.discount, 0));
-    const gstEnabled = Boolean(payload && payload.gstEnabled);
-    const gstRate = gstEnabled ? round2(toNumber(payload && payload.gstRate, 0)) : 0;
+    const rawGstRate = round2(toNumber(payload && payload.gstRate, 0));
+    const rawGstAmount = round2(toNumber(payload && payload.gstAmount, NaN));
+    const hasExplicitGstAmount = Number.isFinite(rawGstAmount) && rawGstAmount > 0;
+    const gstEnabled = Boolean(payload && payload.gstEnabled) || rawGstRate > 0 || hasExplicitGstAmount;
+    const gstRate = gstEnabled ? rawGstRate : 0;
     const paidAmount = round2(toNumber(payload && payload.paidAmount, 0));
     const paidMethod = normalizePaymentMethod(
       payload && (payload.paidMethod || payload.paymentMethod)
     );
-    const notes = toText(payload && payload.notes);
+    const notes = sanitizeNarrationText(payload && payload.notes);
 
     assert(purchaseId, 'Purchase id is required');
     assert(supplierId, 'Supplier is required');
     assert(discount >= 0, 'Discount cannot be negative');
     assert(gstRate >= 0, 'GST rate cannot be negative');
+    assert(!Number.isFinite(rawGstAmount) || rawGstAmount >= 0, 'GST amount cannot be negative');
     assert(paidAmount >= 0, 'Paid amount cannot be negative');
 
     const rawItems = Array.isArray(payload && payload.items) ? payload.items : [];
@@ -2401,7 +2978,7 @@ function createErpService() {
     for (const item of rawItems) {
       const productId = toText(item && item.productId);
       const qty = round2(toNumber(item && item.qty, NaN));
-      const unitCost = round2(toNumber(item && item.unitCost, NaN));
+      const unitCost = round2(toNumber(item && (item.unitCost ?? item.unitPrice), NaN));
 
       assert(productId, 'Each purchase item needs a product');
       assert(Number.isFinite(qty) && qty > 0, 'Purchase quantity must be greater than 0');
@@ -2421,6 +2998,11 @@ function createErpService() {
     store.mutate((data) => {
       const purchase = data.purchases.find((entry) => entry.id === purchaseId);
       assert(purchase, 'Purchase not found');
+      assertGstPeriodUnlocked(
+        data,
+        purchase.createdAt,
+        'Updating a purchase in a filed period'
+      );
 
       const supplier = data.suppliers.find((entry) => entry.id === supplierId);
       assert(supplier, 'Selected supplier does not exist');
@@ -2469,6 +3051,7 @@ function createErpService() {
           productId: product.id,
           sku: product.sku,
           barcode: product.barcode,
+          hsnCode: normalizeHsnCode(product.hsnCode),
           name: product.name,
           unit: product.unit,
           qty: line.qty,
@@ -2480,7 +3063,7 @@ function createErpService() {
       }
 
       const taxableValue = round2(Math.max(subtotal - discount, 0));
-      const gstAmount = round2(gstEnabled ? (taxableValue * gstRate) / 100 : 0);
+      const gstAmount = hasExplicitGstAmount ? rawGstAmount : round2(gstEnabled ? (taxableValue * gstRate) / 100 : 0);
       const total = round2(taxableValue + gstAmount);
       assert(paidAmount <= total, 'Paid amount cannot exceed purchase total');
 
@@ -2544,7 +3127,7 @@ function createErpService() {
     const supplierId = toText(payload.supplierId);
     const amount = round2(toNumber(payload.amount, NaN));
     const paymentMethod = normalizePaymentMethod(payload.paymentMethod || payload.mode || payload.method);
-    const notes = toText(payload.notes);
+    const notes = sanitizeNarrationText(payload.notes);
 
     assert(supplierId, 'Supplier is required');
     assert(Number.isFinite(amount) && amount > 0, 'Payment amount must be greater than 0');
@@ -2634,7 +3217,7 @@ function createErpService() {
       payload && (payload.paymentMethod || payload.mode || payload.method)
     );
     const paidTo = toText(payload && payload.paidTo);
-    const notes = toText(payload && payload.notes);
+    const notes = sanitizeNarrationText(payload && payload.notes);
     const expenseDate = parseLocalDateInput(payload && payload.expenseDate);
 
     assert(Number.isFinite(amount) && amount > 0, 'Expense amount must be greater than 0');
@@ -2798,9 +3381,7 @@ function createErpService() {
           reference: invoice.invoiceNo,
           debit: 0,
           credit: amount,
-          note: [payment.note || '', `Mode: ${paymentMethodLabel(payment.paymentMethod)}`]
-            .filter(Boolean)
-            .join(' • '),
+          note: payment.note || '',
           total: amount,
           balance: 0
         });
@@ -2816,7 +3397,7 @@ function createErpService() {
           reference: invoice.invoiceNo,
           debit: 0,
           credit: remainingPaid,
-          note: `Initial payment • Mode: ${paymentMethodLabel(invoice.paidMethod)}`,
+          note: '',
           total: remainingPaid,
           balance: 0
         });
@@ -2899,12 +3480,7 @@ function createErpService() {
       reference: purchase.purchaseNo,
       debit: round2(toNumber(purchase.dueAmount, purchase.total - purchase.paidAmount)),
       credit: 0,
-      note: [
-        purchase.notes || '',
-        toNumber(purchase.paidAmount, 0) > 0 ? `Initial paid via ${paymentMethodLabel(purchase.paidMethod)}` : ''
-      ]
-        .filter(Boolean)
-        .join(' • '),
+      note: purchase.notes || '',
       total: purchase.total,
       balance: purchase.balance
     }));
@@ -2916,9 +3492,7 @@ function createErpService() {
       reference: payment.paymentNo,
       debit: 0,
       credit: round2(toNumber(payment.amount, 0)),
-      note: [payment.notes || '', `Mode: ${paymentMethodLabel(payment.paymentMethod)}`]
-        .filter(Boolean)
-        .join(' • '),
+      note: payment.notes || '',
       total: payment.amount,
       balance: 0
     }));
@@ -2996,6 +3570,1065 @@ function createErpService() {
     };
   }
 
+  function createTaxAggregate() {
+    return {
+      documentCount: 0,
+      taxableValue: 0,
+      sgst: 0,
+      cgst: 0,
+      gstAmount: 0,
+      total: 0
+    };
+  }
+
+  function addTaxAggregate(target, values) {
+    if (!target || !values) {
+      return target;
+    }
+
+    target.documentCount += Math.max(1, Math.trunc(toNumber(values.documentCount, 1)));
+    target.taxableValue = round2(target.taxableValue + toNumber(values.taxableValue, 0));
+    target.sgst = round2(target.sgst + toNumber(values.sgst, 0));
+    target.cgst = round2(target.cgst + toNumber(values.cgst, 0));
+    target.gstAmount = round2(
+      target.gstAmount + toNumber(values.gstAmount, toNumber(values.sgst, 0) + toNumber(values.cgst, 0))
+    );
+    target.total = round2(
+      target.total + toNumber(values.total, toNumber(values.taxableValue, 0) + toNumber(values.gstAmount, 0))
+    );
+    return target;
+  }
+
+  function pushRateBucket(bucketMap, rate, values) {
+    const numericRate = round2(Math.max(toNumber(rate, 0), 0));
+    const rateKey = numericRate.toFixed(2);
+    const current =
+      bucketMap.get(rateKey) || {
+        rate: numericRate,
+        rateLabel: `${numericRate.toFixed(2)}%`,
+        documentCount: 0,
+        taxableValue: 0,
+        sgst: 0,
+        cgst: 0,
+        gstAmount: 0,
+        total: 0
+      };
+
+    addTaxAggregate(current, values);
+    bucketMap.set(rateKey, current);
+  }
+
+  function sortRateBuckets(bucketMap) {
+    return [...bucketMap.values()].sort((left, right) => {
+      if (right.rate !== left.rate) {
+        return right.rate - left.rate;
+      }
+
+      return right.taxableValue - left.taxableValue;
+    });
+  }
+
+  function sortDocumentsByCreatedAt(left, right) {
+    return new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime();
+  }
+
+  function addSignedTaxAggregate(target, values, multiplier = 1) {
+    if (!target || !values) {
+      return target;
+    }
+
+    target.documentCount += Math.max(1, Math.trunc(toNumber(values.documentCount, 1)));
+    target.taxableValue = round2(target.taxableValue + multiplier * toNumber(values.taxableValue, 0));
+    target.sgst = round2(target.sgst + multiplier * toNumber(values.sgst, 0));
+    target.cgst = round2(target.cgst + multiplier * toNumber(values.cgst, 0));
+    target.gstAmount = round2(
+      target.gstAmount +
+        multiplier * toNumber(values.gstAmount, toNumber(values.sgst, 0) + toNumber(values.cgst, 0))
+    );
+    target.total = round2(
+      target.total +
+        multiplier * toNumber(values.total, toNumber(values.taxableValue, 0) + toNumber(values.gstAmount, 0))
+    );
+    return target;
+  }
+
+  function pushRateBucketSigned(bucketMap, rate, values, multiplier = 1) {
+    const numericRate = round2(Math.max(toNumber(rate, 0), 0));
+    const rateKey = numericRate.toFixed(2);
+    const current =
+      bucketMap.get(rateKey) || {
+        rate: numericRate,
+        rateLabel: `${numericRate.toFixed(2)}%`,
+        documentCount: 0,
+        taxableValue: 0,
+        sgst: 0,
+        cgst: 0,
+        gstAmount: 0,
+        total: 0
+      };
+
+    addSignedTaxAggregate(current, values, multiplier);
+    bucketMap.set(rateKey, current);
+  }
+
+  function createHsnAggregate(seed = {}) {
+    return {
+      hsnCode: normalizeHsnCode(seed.hsnCode) || 'UNSPECIFIED',
+      description: toText(seed.description) || 'Unmapped Item',
+      unit: toText(seed.unit) || 'Unit',
+      quantity: 0,
+      taxableValue: 0,
+      sgst: 0,
+      cgst: 0,
+      gstAmount: 0,
+      total: 0
+    };
+  }
+
+  function pushHsnBucket(bucketMap, row) {
+    const hsnCode = normalizeHsnCode(row && row.hsnCode) || 'UNSPECIFIED';
+    const unit = toText(row && row.unit) || 'Unit';
+    const key = `${hsnCode}::${unit}`;
+    const current =
+      bucketMap.get(key) ||
+      createHsnAggregate({
+        hsnCode,
+        description: row && row.description,
+        unit
+      });
+
+    if (current.description === 'Unmapped Item' && toText(row && row.description)) {
+      current.description = toText(row.description);
+    }
+
+    current.quantity = round2(current.quantity + toNumber(row && row.quantity, 0));
+    current.taxableValue = round2(current.taxableValue + toNumber(row && row.taxableValue, 0));
+    current.sgst = round2(current.sgst + toNumber(row && row.sgst, 0));
+    current.cgst = round2(current.cgst + toNumber(row && row.cgst, 0));
+    current.gstAmount = round2(current.gstAmount + toNumber(row && row.gstAmount, 0));
+    current.total = round2(current.total + toNumber(row && row.total, 0));
+    bucketMap.set(key, current);
+  }
+
+  function sortHsnBuckets(bucketMap) {
+    return [...bucketMap.values()].sort((left, right) => {
+      const hsnCompare = left.hsnCode.localeCompare(right.hsnCode);
+      if (hsnCompare !== 0) {
+        return hsnCompare;
+      }
+
+      return left.description.localeCompare(right.description);
+    });
+  }
+
+  function stateCodeFromGstin(gstin) {
+    const code = toText(gstin).slice(0, 2);
+    return /^\d{2}$/.test(code) ? code : '';
+  }
+
+  function buildGstFilingDataset(data, period, focusDate) {
+    const { range, periodKey, periodLabel } = resolveReportRange(period, focusDate);
+    const business = clone(data.meta.business || {});
+    const businessGstin = toText(business.gstin).toUpperCase();
+    const businessStateCode = stateCodeFromGstin(businessGstin);
+    const customerById = new Map(
+      (Array.isArray(data.customers) ? data.customers : []).map((customer) => [customer.id, customer])
+    );
+    const supplierById = new Map(
+      (Array.isArray(data.suppliers) ? data.suppliers : []).map((supplier) => [supplier.id, supplier])
+    );
+    const productById = new Map(
+      (Array.isArray(data.products) ? data.products : []).map((product) => [product.id, product])
+    );
+
+    const invoices = (Array.isArray(data.invoices) ? data.invoices : [])
+      .filter((invoice) => isWithinRange(invoice.createdAt, range.start, range.end))
+      .sort(sortDocumentsByCreatedAt);
+    const purchases = (Array.isArray(data.purchases) ? data.purchases : [])
+      .filter((purchase) => isWithinRange(purchase.createdAt, range.start, range.end))
+      .sort(sortDocumentsByCreatedAt);
+    const gstNotes = (Array.isArray(data.gstNotes) ? data.gstNotes : [])
+      .filter((note) => isWithinRange(note.createdAt, range.start, range.end))
+      .sort(sortDocumentsByCreatedAt);
+
+    const outwardRateBuckets = new Map();
+    const inwardRateBuckets = new Map();
+    const outwardNoteRateBuckets = new Map();
+    const inwardNoteRateBuckets = new Map();
+    const outwardHsnBuckets = new Map();
+    const inwardHsnBuckets = new Map();
+
+    const outwardRegistered = createTaxAggregate();
+    const outwardUnregistered = createTaxAggregate();
+    const outwardNilRated = createTaxAggregate();
+    const inwardTaxed = createTaxAggregate();
+    const inwardNilRated = createTaxAggregate();
+    const outwardNoteRegistered = createTaxAggregate();
+    const outwardNoteUnregistered = createTaxAggregate();
+    const inwardNoteAdjustments = createTaxAggregate();
+
+    const outwardRows = [];
+    const inwardRows = [];
+    const outwardNoteRows = [];
+    const inwardNoteRows = [];
+
+    let taxedPurchasesMissingSupplierGstinCount = 0;
+    let taxedPurchasesMissingSupplierGstinValue = 0;
+    let taxedInvoicesWithoutCustomerGstinCount = 0;
+    let taxedInvoicesWithoutCustomerGstinValue = 0;
+    let missingHsnRowCount = 0;
+
+    for (const invoice of invoices) {
+      const fallbackCustomer = invoice.customerId ? customerById.get(invoice.customerId) || null : null;
+      const snapshot =
+        invoice.customerSnapshot && typeof invoice.customerSnapshot === 'object'
+          ? invoice.customerSnapshot
+          : fallbackCustomer || {};
+      const customerName = toText(snapshot.name) || 'Walk-in';
+      const customerGstin = toText(snapshot.gstin).toUpperCase();
+      const taxableValue = round2(
+        toNumber(invoice.taxableValue, toNumber(invoice.total, 0) - toNumber(invoice.gstAmount, 0))
+      );
+      const gstAmount = round2(toNumber(invoice.gstAmount, 0));
+      const { primary: sgst, secondary: cgst } = splitTaxValue(gstAmount);
+      const total = round2(toNumber(invoice.total, taxableValue + gstAmount));
+      const gstRate =
+        taxableValue > 0
+          ? round2(toNumber(invoice.gstRate, (gstAmount * 100) / taxableValue))
+          : round2(toNumber(invoice.gstRate, 0));
+
+      const row = {
+        id: invoice.id,
+        invoiceNo:
+          toText(invoice.invoiceNo) || fallbackDocumentNumber('INV', invoice.createdAt, invoice.id),
+        createdAt: invoice.createdAt,
+        date: toDayKey(invoice.createdAt),
+        customerName,
+        customerGstin,
+        customerType: toText(snapshot.type) || 'retail',
+        channel: normalizeChannel(invoice.channel),
+        taxableValue,
+        sgst,
+        cgst,
+        gstAmount,
+        gstRate,
+        total,
+        paymentStatus:
+          toText(invoice.paymentStatus) ||
+          deriveInvoicePaymentStatus(invoice.total, invoice.paidAmount, invoice.balance)
+      };
+
+      outwardRows.push(row);
+
+      if (gstAmount > 0) {
+        pushRateBucket(outwardRateBuckets, gstRate, row);
+        if (customerGstin) {
+          addTaxAggregate(outwardRegistered, row);
+        } else {
+          addTaxAggregate(outwardUnregistered, row);
+          taxedInvoicesWithoutCustomerGstinCount += 1;
+          taxedInvoicesWithoutCustomerGstinValue = round2(
+            taxedInvoicesWithoutCustomerGstinValue + taxableValue
+          );
+        }
+      } else {
+        addTaxAggregate(outwardNilRated, row);
+      }
+
+      const items = Array.isArray(invoice.items) ? invoice.items : [];
+      const invoiceSubtotal = round2(
+        toNumber(
+          invoice.subtotal,
+          items.reduce(
+            (sum, item) =>
+              sum +
+              round2(
+                toNumber(item && item.lineTotal, toNumber(item && item.qty, 0) * toNumber(item && item.unitPrice, 0))
+              ),
+            0
+          )
+        )
+      );
+
+      for (const item of items) {
+        const lineTotal = round2(
+          toNumber(item && item.lineTotal, toNumber(item && item.qty, 0) * toNumber(item && item.unitPrice, 0))
+        );
+        const itemTaxable = invoiceSubtotal > 0 ? round2((lineTotal / invoiceSubtotal) * taxableValue) : lineTotal;
+        const itemGst = gstRate > 0 ? round2((itemTaxable * gstRate) / 100) : 0;
+        const resolvedProduct = productById.get(toText(item && item.productId));
+        const hsnCode = normalizeHsnCode(item && item.hsnCode) || normalizeHsnCode(resolvedProduct && resolvedProduct.hsnCode);
+
+        if (!hsnCode) {
+          missingHsnRowCount += 1;
+        }
+
+        const taxSplit = splitTaxValue(itemGst);
+        pushHsnBucket(outwardHsnBuckets, {
+          hsnCode,
+          description: toText(item && item.name) || toText(resolvedProduct && resolvedProduct.name) || 'Unmapped Item',
+          unit:
+            toText(item && (item.looseUnit || item.unit)) ||
+            toText(resolvedProduct && resolvedProduct.unit) ||
+            'Unit',
+          quantity: round2(toNumber(item && (item.baseQty ?? item.qty), 0)),
+          taxableValue: itemTaxable,
+          sgst: taxSplit.primary,
+          cgst: taxSplit.secondary,
+          gstAmount: itemGst,
+          total: round2(itemTaxable + itemGst)
+        });
+      }
+    }
+
+    for (const purchase of purchases) {
+      const fallbackSupplier = purchase.supplierId ? supplierById.get(purchase.supplierId) || null : null;
+      const snapshot =
+        purchase.supplierSnapshot && typeof purchase.supplierSnapshot === 'object'
+          ? purchase.supplierSnapshot
+          : fallbackSupplier || {};
+      const supplierName = toText(snapshot.name) || 'Supplier';
+      const supplierGstin = toText(snapshot.gstin).toUpperCase();
+      const taxableValue = round2(
+        toNumber(purchase.taxableValue, toNumber(purchase.total, 0) - toNumber(purchase.gstAmount, 0))
+      );
+      const gstAmount = round2(toNumber(purchase.gstAmount, 0));
+      const { primary: sgst, secondary: cgst } = splitTaxValue(gstAmount);
+      const total = round2(toNumber(purchase.total, taxableValue + gstAmount));
+      const gstRate =
+        taxableValue > 0
+          ? round2(toNumber(purchase.gstRate, (gstAmount * 100) / taxableValue))
+          : round2(toNumber(purchase.gstRate, 0));
+
+      const row = {
+        id: purchase.id,
+        purchaseNo:
+          toText(purchase.purchaseNo) || fallbackDocumentNumber('PUR', purchase.createdAt, purchase.id),
+        createdAt: purchase.createdAt,
+        date: toDayKey(purchase.createdAt),
+        supplierName,
+        supplierGstin,
+        taxableValue,
+        sgst,
+        cgst,
+        gstAmount,
+        gstRate,
+        total,
+        paidAmount: round2(toNumber(purchase.paidAmount, 0)),
+        dueAmount: round2(toNumber(purchase.balance, purchase.dueAmount))
+      };
+
+      inwardRows.push(row);
+
+      if (gstAmount > 0) {
+        pushRateBucket(inwardRateBuckets, gstRate, row);
+        addTaxAggregate(inwardTaxed, row);
+
+        if (!supplierGstin) {
+          taxedPurchasesMissingSupplierGstinCount += 1;
+          taxedPurchasesMissingSupplierGstinValue = round2(
+            taxedPurchasesMissingSupplierGstinValue + taxableValue
+          );
+        }
+      } else {
+        addTaxAggregate(inwardNilRated, row);
+      }
+
+      const items = Array.isArray(purchase.items) ? purchase.items : [];
+      const purchaseSubtotal = round2(
+        toNumber(
+          purchase.subtotal,
+          items.reduce(
+            (sum, item) =>
+              sum +
+              round2(
+                toNumber(item && item.lineTotal, toNumber(item && item.qty, 0) * toNumber(item && item.unitCost, 0))
+              ),
+            0
+          )
+        )
+      );
+
+      for (const item of items) {
+        const lineTotal = round2(
+          toNumber(item && item.lineTotal, toNumber(item && item.qty, 0) * toNumber(item && item.unitCost, 0))
+        );
+        const itemTaxable = purchaseSubtotal > 0 ? round2((lineTotal / purchaseSubtotal) * taxableValue) : lineTotal;
+        const itemGst = gstRate > 0 ? round2((itemTaxable * gstRate) / 100) : 0;
+        const resolvedProduct = productById.get(toText(item && item.productId));
+        const hsnCode = normalizeHsnCode(item && item.hsnCode) || normalizeHsnCode(resolvedProduct && resolvedProduct.hsnCode);
+
+        if (!hsnCode) {
+          missingHsnRowCount += 1;
+        }
+
+        const taxSplit = splitTaxValue(itemGst);
+        pushHsnBucket(inwardHsnBuckets, {
+          hsnCode,
+          description: toText(item && item.name) || toText(resolvedProduct && resolvedProduct.name) || 'Unmapped Item',
+          unit: toText(item && item.unit) || toText(resolvedProduct && resolvedProduct.unit) || 'Unit',
+          quantity: round2(toNumber(item && item.qty, 0)),
+          taxableValue: itemTaxable,
+          sgst: taxSplit.primary,
+          cgst: taxSplit.secondary,
+          gstAmount: itemGst,
+          total: round2(itemTaxable + itemGst)
+        });
+      }
+    }
+
+    for (const note of gstNotes) {
+      const taxableValue = round2(toNumber(note.taxableValue, 0));
+      const gstRate =
+        taxableValue > 0
+          ? round2(toNumber(note.gstRate, (toNumber(note.gstAmount, 0) * 100) / taxableValue))
+          : round2(toNumber(note.gstRate, 0));
+      const gstAmount = round2(toNumber(note.gstAmount, taxableValue > 0 ? (taxableValue * gstRate) / 100 : 0));
+      const total = round2(toNumber(note.total, taxableValue + gstAmount));
+      const { primary: sgst, secondary: cgst } = splitTaxValue(gstAmount);
+      const multiplier = note.noteType === 'debit' ? 1 : -1;
+      const row = {
+        id: note.id,
+        noteNo:
+          toText(note.noteNo) ||
+          gstNoteNumber(0, note.noteType, note.createdAt).replace('-0000', '-PENDING'),
+        noteType: note.noteType === 'debit' ? 'debit' : 'credit',
+        direction: note.direction === 'inward' ? 'inward' : 'outward',
+        referenceType: toText(note.referenceType) || 'manual',
+        referenceId: toText(note.referenceId),
+        referenceNo: toText(note.referenceNo),
+        partyName: toText(note.partyName) || 'Counterparty',
+        partyGstin: toText(note.partyGstin).toUpperCase(),
+        createdAt: note.createdAt,
+        date: toDayKey(note.createdAt),
+        taxableValue,
+        sgst,
+        cgst,
+        gstAmount,
+        gstRate,
+        total,
+        signedTaxableValue: round2(taxableValue * multiplier),
+        signedSgst: round2(sgst * multiplier),
+        signedCgst: round2(cgst * multiplier),
+        signedGstAmount: round2(gstAmount * multiplier),
+        signedTotal: round2(total * multiplier),
+        impactLabel: multiplier > 0 ? 'adds tax' : 'reduces tax',
+        notes: sanitizeNarrationText(note.notes)
+      };
+
+      if (row.direction === 'outward') {
+        outwardNoteRows.push(row);
+        pushRateBucketSigned(outwardNoteRateBuckets, gstRate, row, multiplier);
+        if (row.partyGstin) {
+          addSignedTaxAggregate(outwardNoteRegistered, row, multiplier);
+        } else {
+          addSignedTaxAggregate(outwardNoteUnregistered, row, multiplier);
+        }
+      } else {
+        inwardNoteRows.push(row);
+        pushRateBucketSigned(inwardNoteRateBuckets, gstRate, row, multiplier);
+        addSignedTaxAggregate(inwardNoteAdjustments, row, multiplier);
+      }
+    }
+
+    const outwardTaxed = createTaxAggregate();
+    addTaxAggregate(outwardTaxed, outwardRegistered);
+    addTaxAggregate(outwardTaxed, outwardUnregistered);
+    addSignedTaxAggregate(outwardTaxed, outwardNoteRegistered, 1);
+    addSignedTaxAggregate(outwardTaxed, outwardNoteUnregistered, 1);
+
+    const inwardEligibleItc = createTaxAggregate();
+    addTaxAggregate(inwardEligibleItc, inwardTaxed);
+    addSignedTaxAggregate(inwardEligibleItc, inwardNoteAdjustments, 1);
+
+    const payableSgst = round2(Math.max(outwardTaxed.sgst - inwardEligibleItc.sgst, 0));
+    const payableCgst = round2(Math.max(outwardTaxed.cgst - inwardEligibleItc.cgst, 0));
+    const carryForwardSgst = round2(Math.max(inwardEligibleItc.sgst - outwardTaxed.sgst, 0));
+    const carryForwardCgst = round2(Math.max(inwardEligibleItc.cgst - outwardTaxed.cgst, 0));
+
+    const filingHistory = [...(Array.isArray(data.meta.gstFilingHistory) ? data.meta.gstFilingHistory : [])].sort(
+      (left, right) => new Date(right.filedAt || 0) - new Date(left.filedAt || 0)
+    );
+    const currentPeriodHistory = filingHistory.filter(
+      (entry) => entry.period === period && entry.periodKey === periodKey
+    );
+    const currentPeriodLock =
+      (Array.isArray(data.meta.gstLockedPeriods) ? data.meta.gstLockedPeriods : []).find(
+        (entry) => entry.active !== false && entry.period === period && entry.periodKey === periodKey
+      ) || null;
+
+    const outwardHsnRows = sortHsnBuckets(outwardHsnBuckets);
+    const inwardHsnRows = sortHsnBuckets(inwardHsnBuckets);
+
+    const diagnostics = [
+      {
+        id: 'business-gstin',
+        status: businessGstin ? 'ready' : 'attention',
+        title: businessGstin ? 'Business GSTIN configured' : 'Business GSTIN missing',
+        detail: businessGstin
+          ? `GST filings will be prepared under ${businessGstin}.`
+          : 'Set your business GSTIN in Settings before filing this period on the official portal.'
+      },
+      {
+        id: 'supplier-gstin',
+        status: taxedPurchasesMissingSupplierGstinCount > 0 ? 'review' : 'ready',
+        title:
+          taxedPurchasesMissingSupplierGstinCount > 0
+            ? 'Supplier GSTIN review needed'
+            : 'Supplier GSTINs look ready',
+        detail:
+          taxedPurchasesMissingSupplierGstinCount > 0
+            ? `${taxedPurchasesMissingSupplierGstinCount} taxed purchase(s) worth ₹${taxedPurchasesMissingSupplierGstinValue.toFixed(2)} do not carry a supplier GSTIN. Review them before claiming ITC.`
+            : 'All taxed purchase entries in this range include supplier GSTIN details.'
+      },
+      {
+        id: 'b2c-outward',
+        status: taxedInvoicesWithoutCustomerGstinCount > 0 ? 'info' : 'ready',
+        title:
+          taxedInvoicesWithoutCustomerGstinCount > 0
+            ? 'B2C outward supplies present'
+            : 'All taxed outward supplies are GSTIN-tagged',
+        detail:
+          taxedInvoicesWithoutCustomerGstinCount > 0
+            ? `${taxedInvoicesWithoutCustomerGstinCount} taxed invoice(s) worth ₹${taxedInvoicesWithoutCustomerGstinValue.toFixed(2)} will be treated as B2C outward supplies in this workspace.`
+            : 'Every taxed outward supply in this range has a customer GSTIN, so they will appear under B2B outward supplies.'
+      },
+      {
+        id: 'hsn-coverage',
+        status: missingHsnRowCount > 0 ? 'review' : 'ready',
+        title: missingHsnRowCount > 0 ? 'Some items are missing HSN codes' : 'HSN coverage looks good',
+        detail:
+          missingHsnRowCount > 0
+            ? `${missingHsnRowCount} invoice/purchase item row(s) in this period do not have an HSN code. Update the product master for a cleaner HSN summary.`
+            : 'Every invoice and purchase item in this range resolves to an HSN code for summary export.'
+      },
+      {
+        id: 'period-lock',
+        status: currentPeriodLock ? 'attention' : 'ready',
+        title: currentPeriodLock ? 'This filing period is locked' : 'This filing period is open',
+        detail: currentPeriodLock
+          ? `${periodLabel} is locked from edits because it has been marked as filed. Unlock it here before changing invoices, purchases, or GST notes.`
+          : `${periodLabel} is currently open for invoices, purchases, and GST note adjustments.`
+      }
+    ];
+
+    const portalExport = {
+      schemaVersion: '4.1.0',
+      generatedAt: nowIso(),
+      taxpayer: {
+        name: toText(business.name) || 'ERPMania',
+        gstin: businessGstin,
+        stateCode: businessStateCode
+      },
+      filingPeriod: {
+        period,
+        periodKey,
+        periodLabel,
+        from: toDayKey(range.start),
+        to: toDayKey(new Date(range.end.getTime() - 1))
+      },
+      gstr1: {
+        b2b: outwardRows.filter((row) => row.customerGstin).map((row) => ({
+          ctin: row.customerGstin,
+          inv_no: row.invoiceNo,
+          inv_dt: row.date,
+          val: row.total,
+          pos: businessStateCode,
+          taxable_value: row.taxableValue,
+          sgst: row.sgst,
+          cgst: row.cgst,
+          gst_rate: row.gstRate
+        })),
+        b2c: outwardRows.filter((row) => !row.customerGstin).map((row) => ({
+          inv_no: row.invoiceNo,
+          inv_dt: row.date,
+          val: row.total,
+          pos: businessStateCode,
+          taxable_value: row.taxableValue,
+          sgst: row.sgst,
+          cgst: row.cgst,
+          gst_rate: row.gstRate
+        })),
+        cdnr: outwardNoteRows.filter((row) => row.partyGstin).map((row) => ({
+          ctin: row.partyGstin,
+          nt_num: row.noteNo,
+          nt_dt: row.date,
+          nt_ty: row.noteType,
+          p_gst: row.partyGstin,
+          taxable_value: row.signedTaxableValue,
+          sgst: row.signedSgst,
+          cgst: row.signedCgst,
+          gst_rate: row.gstRate,
+          ref_doc: row.referenceNo
+        })),
+        cdnur: outwardNoteRows.filter((row) => !row.partyGstin).map((row) => ({
+          nt_num: row.noteNo,
+          nt_dt: row.date,
+          nt_ty: row.noteType,
+          taxable_value: row.signedTaxableValue,
+          sgst: row.signedSgst,
+          cgst: row.signedCgst,
+          gst_rate: row.gstRate,
+          ref_doc: row.referenceNo
+        })),
+        hsn: outwardHsnRows.map((row) => ({
+          hsn_sc: row.hsnCode,
+          desc: row.description,
+          uqc: row.unit,
+          qty: row.quantity,
+          taxable_value: row.taxableValue,
+          sgst: row.sgst,
+          cgst: row.cgst,
+          total_value: row.total
+        }))
+      },
+      gstr3b: {
+        outward_taxable_supplies: {
+          taxable_value: outwardTaxed.taxableValue,
+          sgst: outwardTaxed.sgst,
+          cgst: outwardTaxed.cgst,
+          total_tax: outwardTaxed.gstAmount
+        },
+        outward_nil_rated_supplies: clone(outwardNilRated),
+        inward_eligible_itc: {
+          taxable_value: inwardEligibleItc.taxableValue,
+          sgst: inwardEligibleItc.sgst,
+          cgst: inwardEligibleItc.cgst,
+          total_tax: inwardEligibleItc.gstAmount
+        },
+        inward_non_gst: clone(inwardNilRated),
+        setoff: {
+          payable_sgst: payableSgst,
+          payable_cgst: payableCgst,
+          payable_total: round2(payableSgst + payableCgst),
+          carry_forward_sgst: carryForwardSgst,
+          carry_forward_cgst: carryForwardCgst,
+          carry_forward_total: round2(carryForwardSgst + carryForwardCgst)
+        }
+      },
+      inward_register: {
+        purchases: inwardRows.map((row) => ({
+          purchase_no: row.purchaseNo,
+          date: row.date,
+          supplier_name: row.supplierName,
+          supplier_gstin: row.supplierGstin,
+          taxable_value: row.taxableValue,
+          sgst: row.sgst,
+          cgst: row.cgst,
+          gst_rate: row.gstRate,
+          total: row.total
+        })),
+        notes: inwardNoteRows.map((row) => ({
+          note_no: row.noteNo,
+          date: row.date,
+          supplier_name: row.partyName,
+          supplier_gstin: row.partyGstin,
+          note_type: row.noteType,
+          taxable_value: row.signedTaxableValue,
+          sgst: row.signedSgst,
+          cgst: row.signedCgst,
+          gst_rate: row.gstRate,
+          ref_doc: row.referenceNo
+        })),
+        hsn: inwardHsnRows.map((row) => ({
+          hsn_sc: row.hsnCode,
+          desc: row.description,
+          uqc: row.unit,
+          qty: row.quantity,
+          taxable_value: row.taxableValue,
+          sgst: row.sgst,
+          cgst: row.cgst,
+          total_value: row.total
+        }))
+      },
+      filingStatus: {
+        isLocked: Boolean(currentPeriodLock),
+        history: currentPeriodHistory.map((entry) => ({
+          id: entry.id,
+          filedAt: entry.filedAt,
+          returnTypes: entry.returnTypes,
+          acknowledgementNo: entry.acknowledgementNo,
+          locked: Boolean(entry.locked)
+        }))
+      }
+    };
+
+    return {
+      period,
+      inputDate: toDayKey(focusDate),
+      periodKey,
+      periodLabel,
+      rangeStart: range.start.toISOString(),
+      rangeEnd: range.end.toISOString(),
+      generatedAt: nowIso(),
+      business: {
+        name: toText(business.name) || 'ERPMania',
+        gstin: businessGstin,
+        stateCode: businessStateCode
+      },
+      summary: {
+        outwardTaxableValue: outwardTaxed.taxableValue,
+        outwardTax: {
+          sgst: outwardTaxed.sgst,
+          cgst: outwardTaxed.cgst,
+          total: outwardTaxed.gstAmount
+        },
+        outwardAdjustments: {
+          registered: clone(outwardNoteRegistered),
+          unregistered: clone(outwardNoteUnregistered)
+        },
+        inwardTaxableValue: inwardEligibleItc.taxableValue,
+        inputCredit: {
+          sgst: inwardEligibleItc.sgst,
+          cgst: inwardEligibleItc.cgst,
+          total: inwardEligibleItc.gstAmount
+        },
+        inwardAdjustments: clone(inwardNoteAdjustments),
+        netPayable: {
+          sgst: payableSgst,
+          cgst: payableCgst,
+          total: round2(payableSgst + payableCgst)
+        },
+        carryForwardCredit: {
+          sgst: carryForwardSgst,
+          cgst: carryForwardCgst,
+          total: round2(carryForwardSgst + carryForwardCgst)
+        }
+      },
+      gstr1: {
+        registered: outwardRegistered,
+        unregistered: outwardUnregistered,
+        nilRated: outwardNilRated,
+        noteRegistered: outwardNoteRegistered,
+        noteUnregistered: outwardNoteUnregistered,
+        invoiceRows: outwardRows,
+        noteRows: outwardNoteRows,
+        rateRows: sortRateBuckets(outwardRateBuckets),
+        noteRateRows: sortRateBuckets(outwardNoteRateBuckets)
+      },
+      gstr3b: {
+        outwardTaxableSupplies: outwardTaxed,
+        outwardNilRatedSupplies: outwardNilRated,
+        inwardEligibleItc,
+        inwardNonGstPurchases: inwardNilRated,
+        setoff: {
+          outputSgst: outwardTaxed.sgst,
+          outputCgst: outwardTaxed.cgst,
+          inputSgst: inwardEligibleItc.sgst,
+          inputCgst: inwardEligibleItc.cgst,
+          payableSgst,
+          payableCgst,
+          payableTotal: round2(payableSgst + payableCgst),
+          carryForwardSgst,
+          carryForwardCgst,
+          carryForwardTotal: round2(carryForwardSgst + carryForwardCgst)
+        }
+      },
+      inwardRegister: {
+        taxed: inwardTaxed,
+        adjustedTaxed: inwardEligibleItc,
+        noteAdjustments: inwardNoteAdjustments,
+        nilRated: inwardNilRated,
+        purchaseRows: inwardRows,
+        noteRows: inwardNoteRows,
+        rateRows: sortRateBuckets(inwardRateBuckets),
+        noteRateRows: sortRateBuckets(inwardNoteRateBuckets)
+      },
+      hsnSummary: {
+        outwardRows: outwardHsnRows,
+        inwardRows: inwardHsnRows
+      },
+      filingStatus: {
+        isLocked: Boolean(currentPeriodLock),
+        activeLock: currentPeriodLock ? clone(currentPeriodLock) : null,
+        currentPeriodHistory: currentPeriodHistory.map((entry) => clone(entry)),
+        allHistory: filingHistory.map((entry) => clone(entry))
+      },
+      diagnostics,
+      portalExport
+    };
+  }
+
+  function getGstFilingData(payload) {
+    assertLicenseActive();
+
+    const data = store.get();
+    const reportInput =
+      payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? payload
+        : { inputDate: payload };
+    const period = normalizeReportPeriod(reportInput.period);
+    const focusDate = resolveReportFocusDate(reportInput.inputDate);
+
+    return buildGstFilingDataset(data, period, focusDate);
+  }
+
+  function getGstPortalExport(payload) {
+    assertLicenseActive();
+
+    const data = store.get();
+    const reportInput =
+      payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? payload
+        : { inputDate: payload };
+    const period = normalizeReportPeriod(reportInput.period);
+    const focusDate = resolveReportFocusDate(reportInput.inputDate);
+
+    return buildGstFilingDataset(data, period, focusDate).portalExport;
+  }
+
+  function upsertGstNote(payload) {
+    assertLicenseActive();
+
+    const input = payload && typeof payload === 'object' ? payload : {};
+    const id = toText(input.id);
+    const noteType = toText(input.noteType).toLowerCase() === 'debit' ? 'debit' : 'credit';
+    const direction = toText(input.direction).toLowerCase() === 'inward' ? 'inward' : 'outward';
+    const referenceType = (() => {
+      const value = toText(input.referenceType).toLowerCase();
+      return value === 'invoice' || value === 'purchase' || value === 'manual' ? value : 'manual';
+    })();
+    const referenceId = toText(input.referenceId);
+    const taxableValue = round2(toNumber(input.taxableValue, NaN));
+    const gstRate = round2(Math.max(toNumber(input.gstRate, 0), 0));
+    const rawGstAmount = round2(toNumber(input.gstAmount, NaN));
+    const gstAmount = Number.isFinite(rawGstAmount)
+      ? rawGstAmount
+      : taxableValue > 0
+        ? round2((taxableValue * gstRate) / 100)
+        : 0;
+    const total = round2(toNumber(input.total, taxableValue + gstAmount));
+    const manualPartyName = toText(input.partyName);
+    const manualPartyGstin = toText(input.partyGstin).toUpperCase();
+    const manualReferenceNo = toText(input.referenceNo);
+    const notes = sanitizeNarrationText(input.notes);
+    const createdAt =
+      normalizeIsoOrNull(input.createdAt) ||
+      normalizeIsoOrNull(input.noteDate || input.inputDate) ||
+      nowIso();
+
+    assert(Number.isFinite(taxableValue) && taxableValue > 0, 'Taxable value must be greater than 0');
+    assert(Number.isFinite(gstRate) && gstRate >= 0, 'GST rate cannot be negative');
+    assert(Number.isFinite(gstAmount) && gstAmount >= 0, 'GST amount cannot be negative');
+    if (referenceType === 'invoice') {
+      assert(direction === 'outward', 'Invoice-linked GST notes must be outward');
+      assert(referenceId, 'Select the related invoice for this GST note');
+    }
+    if (referenceType === 'purchase') {
+      assert(direction === 'inward', 'Purchase-linked GST notes must be inward');
+      assert(referenceId, 'Select the related purchase for this GST note');
+    }
+
+    let persisted;
+
+    store.mutate((data) => {
+      const existing = id ? data.gstNotes.find((entry) => entry.id === id) : null;
+      if (id) {
+        assert(existing, 'GST note not found');
+        assertGstPeriodUnlocked(data, existing.createdAt, 'Updating a GST note');
+      } else {
+        assertGstPeriodUnlocked(data, createdAt, 'Creating a GST note');
+      }
+
+      let referenceNo = manualReferenceNo;
+      let partyName = manualPartyName;
+      let partyGstin = manualPartyGstin;
+
+      if (referenceType === 'invoice') {
+        const invoice = data.invoices.find((entry) => entry.id === referenceId);
+        assert(invoice, 'Referenced invoice not found');
+        referenceNo =
+          toText(invoice.invoiceNo) || fallbackDocumentNumber('INV', invoice.createdAt, invoice.id);
+        partyName =
+          toText(invoice.customerSnapshot && invoice.customerSnapshot.name) || 'Walk-in Customer';
+        partyGstin = toText(invoice.customerSnapshot && invoice.customerSnapshot.gstin).toUpperCase();
+      } else if (referenceType === 'purchase') {
+        const purchase = data.purchases.find((entry) => entry.id === referenceId);
+        assert(purchase, 'Referenced purchase not found');
+        referenceNo =
+          toText(purchase.purchaseNo) || fallbackDocumentNumber('PUR', purchase.createdAt, purchase.id);
+        partyName =
+          toText(purchase.supplierSnapshot && purchase.supplierSnapshot.name) || 'Supplier';
+        partyGstin = toText(purchase.supplierSnapshot && purchase.supplierSnapshot.gstin).toUpperCase();
+      }
+
+      assert(partyName, 'Party name is required for the GST note');
+
+      const noteNo =
+        toText(input.noteNo) ||
+        (existing && toText(existing.noteNo)) ||
+        gstNoteNumber(detectNextGstNoteCounter(data), noteType, createdAt);
+
+      const nextNote = {
+        id: existing ? existing.id : randomUUID(),
+        noteNo,
+        noteType,
+        direction,
+        referenceType,
+        referenceId: referenceType === 'manual' ? '' : referenceId,
+        referenceNo,
+        partyName,
+        partyGstin,
+        taxableValue,
+        gstRate,
+        gstAmount,
+        total,
+        notes,
+        createdAt: existing ? existing.createdAt : createdAt,
+        updatedAt: nowIso()
+      };
+
+      if (existing) {
+        Object.assign(existing, nextNote);
+        persisted = clone(existing);
+      } else {
+        data.gstNotes.push(nextNote);
+        persisted = clone(nextNote);
+      }
+
+      return data;
+    });
+
+    return persisted;
+  }
+
+  function deleteGstNote(noteId) {
+    assertLicenseActive();
+
+    const id = toText(noteId);
+    assert(id, 'GST note id is required');
+
+    store.mutate((data) => {
+      const noteIndex = data.gstNotes.findIndex((entry) => entry.id === id);
+      assert(noteIndex >= 0, 'GST note not found');
+      assertGstPeriodUnlocked(data, data.gstNotes[noteIndex].createdAt, 'Deleting a GST note');
+      data.gstNotes.splice(noteIndex, 1);
+      return data;
+    });
+
+    return { deleted: true };
+  }
+
+  function recordGstFiling(payload) {
+    assertLicenseActive();
+
+    const input = payload && typeof payload === 'object' ? payload : {};
+    const period = normalizeReportPeriod(input.period);
+    const focusDate = resolveReportFocusDate(input.inputDate);
+    const returnTypes = normalizeReturnTypes(input.returnTypes || input.returnType);
+    const acknowledgementNo = toText(input.acknowledgementNo || input.portalReference);
+    const notes = sanitizeNarrationText(input.notes);
+    const shouldLock = input.lockPeriod !== false;
+
+    assert(returnTypes.length > 0, 'Select at least one GST return type');
+
+    let savedEntry;
+
+    store.mutate((data) => {
+      const dataset = buildGstFilingDataset(data, period, focusDate);
+      const existingIndex = (Array.isArray(data.meta.gstFilingHistory) ? data.meta.gstFilingHistory : []).findIndex(
+        (entry) => entry.period === period && entry.periodKey === dataset.periodKey
+      );
+
+      const nextEntry = {
+        id:
+          existingIndex >= 0
+            ? data.meta.gstFilingHistory[existingIndex].id
+            : randomUUID(),
+        period,
+        periodKey: dataset.periodKey,
+        periodLabel: dataset.periodLabel,
+        rangeStart: dataset.rangeStart,
+        rangeEnd: dataset.rangeEnd,
+        returnTypes,
+        acknowledgementNo,
+        portalReference: acknowledgementNo,
+        notes,
+        filedAt: nowIso(),
+        locked: shouldLock,
+        summary: clone(dataset.summary)
+      };
+
+      if (existingIndex >= 0) {
+        data.meta.gstFilingHistory[existingIndex] = nextEntry;
+      } else {
+        data.meta.gstFilingHistory.push(nextEntry);
+      }
+
+      const activeLockIndex = (Array.isArray(data.meta.gstLockedPeriods) ? data.meta.gstLockedPeriods : []).findIndex(
+        (entry) => entry.active !== false && entry.period === period && entry.periodKey === dataset.periodKey
+      );
+
+      if (shouldLock) {
+        const lockEntry = {
+          id:
+            activeLockIndex >= 0
+              ? data.meta.gstLockedPeriods[activeLockIndex].id
+              : randomUUID(),
+          period,
+          periodKey: dataset.periodKey,
+          periodLabel: dataset.periodLabel,
+          rangeStart: dataset.rangeStart,
+          rangeEnd: dataset.rangeEnd,
+          lockedAt: nowIso(),
+          unlockedAt: null,
+          filingHistoryId: nextEntry.id,
+          acknowledgementNo,
+          notes,
+          active: true
+        };
+
+        if (activeLockIndex >= 0) {
+          data.meta.gstLockedPeriods[activeLockIndex] = lockEntry;
+        } else {
+          data.meta.gstLockedPeriods.push(lockEntry);
+        }
+      } else if (activeLockIndex >= 0) {
+        data.meta.gstLockedPeriods[activeLockIndex].active = false;
+        data.meta.gstLockedPeriods[activeLockIndex].unlockedAt = nowIso();
+      }
+
+      savedEntry = clone(nextEntry);
+      return data;
+    });
+
+    return savedEntry;
+  }
+
+  function unlockGstPeriod(payload) {
+    assertLicenseActive();
+
+    const input = payload && typeof payload === 'object' ? payload : {};
+    const lockId = toText(input.lockId);
+    const period = normalizeReportPeriod(input.period);
+    const focusDate = resolveReportFocusDate(input.inputDate);
+    const { periodKey } = resolveReportRange(period, focusDate);
+
+    let unlocked;
+
+    store.mutate((data) => {
+      const locks = Array.isArray(data.meta.gstLockedPeriods) ? data.meta.gstLockedPeriods : [];
+      const lock = lockId
+        ? locks.find((entry) => entry.id === lockId && entry.active !== false)
+        : locks.find((entry) => entry.active !== false && entry.period === period && entry.periodKey === periodKey);
+      assert(lock, 'Locked GST period not found');
+
+      lock.active = false;
+      lock.unlockedAt = nowIso();
+
+      const history = Array.isArray(data.meta.gstFilingHistory) ? data.meta.gstFilingHistory : [];
+      const historyEntry = history.find((entry) => entry.id === lock.filingHistoryId);
+      if (historyEntry) {
+        historyEntry.locked = false;
+      }
+
+      unlocked = clone(lock);
+      return data;
+    });
+
+    return unlocked;
+  }
+
   function getTrialBalance(payload) {
     assertLicenseActive();
 
@@ -3035,6 +4668,7 @@ function createErpService() {
         toNumber(invoice.taxableValue, toNumber(invoice.total, 0) - toNumber(invoice.gstAmount, 0))
       );
       const gstAmount = round2(toNumber(invoice.gstAmount, 0));
+      const { primary: outputSgst, secondary: outputCgst } = splitTaxValue(gstAmount);
       const total = round2(toNumber(invoice.total, taxableValue + gstAmount));
 
       const paymentHistory = Array.isArray(invoice.paymentHistory) ? invoice.paymentHistory : [];
@@ -3049,7 +4683,8 @@ function createErpService() {
       post(initialPaymentAccount, initialPaid, 0);
       post('Accounts Receivable', initialReceivable, 0);
       post('Sales', 0, taxableValue);
-      post('Output GST', 0, gstAmount);
+      post('Output SGST', 0, outputSgst);
+      post('Output CGST', 0, outputCgst);
 
       const items = Array.isArray(invoice.items) ? invoice.items : [];
       let cogs = 0;
@@ -3086,12 +4721,14 @@ function createErpService() {
         toNumber(purchase.taxableValue, toNumber(purchase.total, 0) - toNumber(purchase.gstAmount, 0))
       );
       const gstAmount = round2(toNumber(purchase.gstAmount, 0));
+      const { primary: inputSgst, secondary: inputCgst } = splitTaxValue(gstAmount);
       const paidAmount = round2(toNumber(purchase.paidAmount, 0));
       const dueAmount = round2(toNumber(purchase.dueAmount, Math.max(toNumber(purchase.total, 0) - paidAmount, 0)));
       const paidAccount = paymentAccountForMethod(purchase.paidMethod);
 
       post('Inventory', taxableValue, 0);
-      post('Input GST', gstAmount, 0);
+      post('Input SGST', inputSgst, 0);
+      post('Input CGST', inputCgst, 0);
       post(paidAccount, 0, paidAmount);
       post('Accounts Payable', 0, dueAmount);
     }
@@ -3119,11 +4756,13 @@ function createErpService() {
       'Bank / Digital',
       'Accounts Receivable',
       'Inventory',
-      'Input GST',
+      'Input SGST',
+      'Input CGST',
       'Cost of Goods Sold',
       'Operating Expenses',
       'Accounts Payable',
-      'Output GST',
+      'Output SGST',
+      'Output CGST',
       'Sales'
     ];
 
@@ -3202,7 +4841,7 @@ function createErpService() {
 
     const invoiceId = toText(payload && payload.invoiceId);
     const amount = round2(toNumber(payload && payload.amount, NaN));
-    const note = toText(payload && payload.note);
+    const note = sanitizeNarrationText(payload && payload.note);
     const paymentMethod = normalizePaymentMethod(
       payload && (payload.paymentMethod || payload.mode || payload.method)
     );
@@ -3264,9 +4903,43 @@ function createErpService() {
   function getInvoiceForPrint(invoiceId) {
     const data = store.get();
     const invoice = getInvoice(invoiceId);
+    const customer =
+      invoice.customerId ? data.customers.find((entry) => entry.id === invoice.customerId) || null : null;
+    const subtotal = round2(
+      toNumber(
+        invoice.subtotal,
+        (Array.isArray(invoice.items) ? invoice.items : []).reduce(
+          (sum, item) =>
+            sum + round2(toNumber(item.lineTotal, toNumber(item.qty, 0) * toNumber(item.unitPrice, 0))),
+          0
+        )
+      )
+    );
 
     return {
-      invoice,
+      invoice: {
+        ...invoice,
+        invoiceNo: toText(invoice.invoiceNo) || fallbackDocumentNumber('INV', invoice.createdAt, invoice.id),
+        subtotal,
+        customerSnapshot:
+          invoice.customerSnapshot && toText(invoice.customerSnapshot.name)
+            ? invoice.customerSnapshot
+            : customer
+              ? {
+                  name: customer.name,
+                  type: customer.type,
+                  phone: customer.phone,
+                  address: customer.address,
+                  gstin: customer.gstin
+                }
+              : {
+                  name: 'Walk-in Customer',
+                  type: 'retail',
+                  phone: '',
+                  address: '',
+                  gstin: ''
+                }
+      },
       business: clone(data.meta.business)
     };
   }
@@ -3296,6 +4969,7 @@ function createErpService() {
     restoreLatestLocalBackup,
     runAutoBackupCheck,
     upsertProduct,
+    lookupOpenFoodFactsProduct,
     deleteProduct,
     upsertCustomer,
     deleteCustomer,
@@ -3306,12 +4980,18 @@ function createErpService() {
     recordInvoicePayment,
     createPurchase,
     updatePurchase,
+    upsertGstNote,
+    deleteGstNote,
+    recordGstFiling,
+    unlockGstPeriod,
     createSupplierPayment,
     createExpense,
     updateExpense,
     extractEnglishOcr,
     getCustomerLedger,
     getSupplierLedger,
+    getGstFilingData,
+    getGstPortalExport,
     getTrialBalance,
     getDailyProfitLoss,
     getInvoice,
